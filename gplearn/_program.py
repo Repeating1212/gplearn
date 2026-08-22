@@ -668,3 +668,87 @@ class _Program(object):
     depth_ = property(_depth)
     length_ = property(_length)
     indices_ = property(_indices)
+
+    def similarity(self, prog2):
+        """
+        Calculates tree similarity directly on gplearn flattened lists without extra classes.
+        """
+        if self is None or prog2 is None:
+            return 0.0
+
+        p1, p2 = self.program, prog2.program  # Direct access to flattened list
+        max_depth = min(self.depth_, prog2.depth_)
+        result = [0.0, 0.0]  # [weighted_matches, total_weight]
+
+        def get_subtree_size(program, idx):
+            """Calculates how many array elements belong to the subtree starting at idx."""
+            if idx >= len(program):
+                return 0
+            node = program[idx]
+            if not isinstance(node, _Function):
+                return 1  # Terminals (constants/variables) take 1 slot
+
+            # Function node: 1 slot for function + size of all child subtrees[cite: 2]
+            size = 1
+            for _ in range(node.arity):
+                size += get_subtree_size(program, idx + size)
+            return size
+
+        def nodes_equal(n1, n2):
+            if isinstance(n1, _Function) and isinstance(n2, _Function):
+                return n1.name == n2.name
+            if isinstance(n1, int) and isinstance(n2, int):
+                return n1 == n2
+            if isinstance(n1, float) and isinstance(n2, float):
+                return np.isclose(n1, n2)
+            return False
+
+        def compare_subtrees(idx1, idx2, depth):
+            weight = float(max_depth - depth + 1) / (max_depth + 1)
+            result[1] += weight
+
+            n1, n2 = p1[idx1], p2[idx2]
+            if nodes_equal(n1, n2):
+                result[0] += weight
+
+            # If both are functions, step through corresponding children
+            if isinstance(n1, _Function) and isinstance(n2, _Function):
+                max_arity = max(n1.arity, n2.arity)
+                c1_idx = idx1 + 1
+                c2_idx = idx2 + 1
+
+                for i in range(max_arity):
+                    has_c1 = i < n1.arity and c1_idx < len(p1)
+                    has_c2 = i < n2.arity and c2_idx < len(p2)
+
+                    if has_c1 and has_c2:
+                        compare_subtrees(c1_idx, c2_idx, depth + 1)
+                    elif has_c1 or has_c2:
+                        child_weight = float(max_depth - (depth + 1) + 1) / (max_depth + 1)
+                        result[1] += child_weight
+
+                    # Shift indices forward by subtree sizes to reach the next sibling
+                    if has_c1:
+                        c1_idx += get_subtree_size(p1, c1_idx)
+                    if has_c2:
+                        c2_idx += get_subtree_size(p2, c2_idx)
+
+        compare_subtrees(0, 0, 0)
+        return 0.0 if result[1] == 0 else result[0] / result[1]
+
+    def distance(self, prog2, constant = 10):
+
+        """Calculate the Penalty for similarity different between two program.
+        Parameters
+        ----------
+        prog2 : Program intance
+        constant : The maximum penalty rate + 1
+
+        """
+        if constant < 0: constant = 0;
+        epsilon = 1e-10
+        similarity = max((1 - self.calculate_similarity(prog2)), epsilon)
+        return  1 + (similarity ** 2) * constant
+
+    def competitive_value(self, prog2, constant = 10):
+        return self.fitness_ * self.distance(prog2, constant)
