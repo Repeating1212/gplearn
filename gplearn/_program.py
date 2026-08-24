@@ -12,6 +12,7 @@ computer program. It is used for creating and evolving programs used in the
 from copy import copy
 
 import numpy as np
+from sklearn import metrics
 from sklearn.utils.random import sample_without_replacement
 
 from .functions import _Function
@@ -483,7 +484,8 @@ class _Program(object):
         """
         if parsimony_coefficient is None:
             parsimony_coefficient = self.parsimony_coefficient
-        penalty = parsimony_coefficient * len(self.program) * self.metric.sign
+        penalty = parsimony_coefficient * len(self.program) * self.metric.sign * self.raw_fitness_
+        if (self.metric.sign > 0): penalty = abs(penalty)
         return self.raw_fitness_ - penalty
 
     def get_subtree(self, random_state, program=None):
@@ -747,7 +749,7 @@ class _Program(object):
         """
         if constant < 0: constant = 0;
         epsilon = 1e-10
-        similarity = max((1 - self.calculate_similarity(prog2)), epsilon)
+        similarity = max((1 - self.similarity(prog2)), epsilon)
         return  1 + (similarity ** 2) * constant
 
     def competitive_value(self, prog2, constant = 10):

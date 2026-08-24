@@ -136,6 +136,16 @@ def _root_mean_square_error(y, y_pred, w):
     """Calculate the root mean square error."""
     return np.sqrt(np.average(((y_pred - y) ** 2), weights=w))
 
+def _r2_score(y, y_pred, w):
+    """Calculate the weighted R2 (Coefficient of Determination) score."""
+    # print(" RUN R2 ")
+    y_mean_weighted = np.average(y, weights=w)
+    numerator = np.average((y - y_pred) ** 2, weights=w)
+    denominator = np.average((y - y_mean_weighted) ** 2, weights=w)
+    # Safeguard against zero variance (division by zero)
+    if denominator == 0:
+        return 0.0
+    return 1.0 - (numerator / denominator)
 
 def _log_loss(y, y_pred, w):
     """Calculate the log loss."""
@@ -158,10 +168,13 @@ root_mean_square_error = _Fitness(function=_root_mean_square_error,
                                   greater_is_better=False)
 log_loss = _Fitness(function=_log_loss,
                     greater_is_better=False)
+r2_score = _Fitness(function=_r2_score,
+                            greater_is_better=True)
 
 _fitness_map = {'pearson': weighted_pearson,
                 'spearman': weighted_spearman,
                 'mean absolute error': mean_absolute_error,
                 'mse': mean_square_error,
                 'rmse': root_mean_square_error,
-                'log loss': log_loss}
+                'log loss': log_loss,
+                'r2 score': r2_score}

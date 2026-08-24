@@ -4,7 +4,7 @@ The :mod:`gplearn.genetic` module implements Genetic Programming. These
 are supervised learning methods based on applying evolutionary operations on
 computer programs.
 """
-
+import copy
 # Author: Trevor Stephens <trevorstephens.com>
 #
 # License: BSD 3 clause
@@ -154,6 +154,75 @@ def _parallel_evolve(n_programs, parents, X, y, sample_weight, seeds, params):
 
     return programs
 
+def reproduction(parent, parent_index):
+    """Deep copy elite parent and assign updated reproduction genome."""
+    program = copy.deepcopy(parent)
+    program.parents = {
+        'method': 'Reproduction',
+        'parent_idx': parent_index,
+        'parent_nodes': []
+    }
+
+    return program
+
+# def reproduction(X, parent, parent_index, params, seed):
+#     """Private function used to reproduce elites program """
+#     n_samples, n_features = X.shape
+#     # Unpack parameters
+#     tournament_size = params['tournament_size']
+#     function_set = params['function_set']
+#     arities = params['arities']
+#     init_depth = params['init_depth']
+#     init_method = params['init_method']
+#     const_range = params['const_range']
+#     metric = params['_metric']
+#     transformer = params['_transformer']
+#     parsimony_coefficient = params['parsimony_coefficient']
+#     method_probs = params['method_probs']
+#     p_point_replace = params['p_point_replace']
+#     max_samples = params['max_samples']
+#     feature_names = params['feature_names']
+#
+#     program = parent.reproduce()
+#     genome = {'method': 'Reproduction',
+#               'parent_idx': parent_index,
+#               'parent_nodes': []}
+#
+#     random_state = check_random_state(seed)
+#
+#     program = _Program(function_set=function_set,
+#                        arities=arities,
+#                        init_depth=init_depth,
+#                        init_method=init_method,
+#                        n_features=n_features,
+#                        metric=metric,
+#                        transformer=transformer,
+#                        const_range=const_range,
+#                        p_point_replace=p_point_replace,
+#                        parsimony_coefficient=parsimony_coefficient,
+#                        feature_names=feature_names,
+#                        random_state=random_state,
+#                        program=program)
+#
+#     program.raw_fitness_ = parent.raw_fitness_
+#     program.oob_fitness_ = program.raw_fitness_
+#     program.parents = genome
+#
+#     return program
+
+def _calculate_distribution(population):
+    total_distance = 0
+    number_of_pairs = 0
+
+    for i in range(len(population) -1):
+        for j in range(i, len(population)):
+            similarity = population[i].similarity(population[j])
+            distance = 1 - similarity
+            total_distance += distance
+            number_of_pairs += 1
+
+    return total_distance / number_of_pairs
+
 
 class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
 
@@ -192,7 +261,8 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
                  low_memory=False,
                  n_jobs=1,
                  verbose=0,
-                 random_state=None):
+                 random_state=None,
+                 n_elites = 0):
 
         self.population_size = population_size
         self.hall_of_fame = hall_of_fame
@@ -220,6 +290,11 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
         self.n_jobs = n_jobs
         self.verbose = verbose
         self.random_state = random_state
+        self.n_elites = n_elites
+
+        # Data record
+        self.best_programs_per_gen = []
+        self.population_distribution = []
 
     def _verbose_reporter(self, run_details=None):
         """A report of the progress of the evolution process.
@@ -365,7 +440,7 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
             self._metric = self.metric
         elif isinstance(self, RegressorMixin):
             if self.metric not in ('mean absolute error', 'mse', 'rmse',
-                                   'pearson', 'spearman'):
+                                   'pearson', 'spearman', 'r2 score'):
                 raise ValueError('Unsupported metric: %s' % self.metric)
             self._metric = _fitness_map[self.metric]
         elif isinstance(self, ClassifierMixin):
@@ -429,6 +504,11 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
                 raise ValueError('Invalid arity for `transformer`. Expected 1, '
                                  'got %d.' % (self._transformer.arity))
 
+            if not (0 <= self.n_elites <= self.population_size):
+                raise ValueError(
+                    f"Valid integer values for `n_elites` are 0 <= n_elites <= population_size ({self.population_size}). "
+                    f"Got {self.n_elites}."
+                )
         params = self.get_params()
         params['_metric'] = self._metric
         if hasattr(self, '_transformer'):
@@ -475,11 +555,30 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
         for gen in range(prior_generations, self.generations):
 
             start_time = time()
+            elites_index = []
+            elites_copied = []
 
             if gen == 0:
                 parents = None
             else:
                 parents = self._programs[gen - 1]
+
+                # Save Elites
+                if self.n_elites > 0 and parents is not None:
+                    parent_fitness = np.array([p.fitness_ for p in parents])
+                    sign = -1 if self._metric.greater_is_better else 1
+                    elites_index = np.argsort(sign * parent_fitness)[:self.n_elites]
+                    for original_idx in elites_index:
+                        parent = parents[original_idx]
+
+                        # Generate cloned program using reproduction()
+                        elite_program = copy.deepcopy(parent)
+                        elite_program.parents = {
+                            'method': 'Reproduction',
+                            'parent_idx': original_idx,
+                            'parent_nodes': []
+                        }
+                        elites_copied.append(elite_program)
 
             # Parallel loop
             n_jobs, n_programs, starts = _partition_estimators(
@@ -500,6 +599,11 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
             # Reduce, maintaining order across different n_jobs
             population = list(itertools.chain.from_iterable(population))
 
+            # Replace Elites
+            if gen > 0 and self.n_elites > 0:
+                for original_idx, elite_program in zip(elites_index, elites_copied):
+                    population[int(original_idx)] = elite_program
+
             fitness = [program.raw_fitness_ for program in population]
             length = [program.length_ for program in population]
 
@@ -511,6 +615,12 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
                 program.fitness_ = program.fitness(parsimony_coefficient)
 
             self._programs.append(population)
+            if self._metric.greater_is_better:
+                best_prog = population[np.argmax([p.raw_fitness_ for p in population])]
+            else:
+                best_prog = population[np.argmin([p.raw_fitness_ for p in population])]
+            self.best_programs_per_gen.append(best_prog)
+            # self.population_distribution.append(_calculate_distribution(population))
 
             # Remove old programs that didn't make it into the new population.
             if not self.low_memory:
@@ -773,6 +883,10 @@ class SymbolicRegressor(RegressorMixin, BaseSymbolic):
         If None, the random number generator is the RandomState instance used
         by `np.random`.
 
+    n_elites : int, optional (default=0)
+        The number of best programs from the previous generation to preserve
+        unaltered into the next generation. Must be between 0 and `population_size`.
+
     Attributes
     ----------
     run_details_ : dict
@@ -822,7 +936,8 @@ class SymbolicRegressor(RegressorMixin, BaseSymbolic):
                  low_memory=False,
                  n_jobs=1,
                  verbose=0,
-                 random_state=None):
+                 random_state=None,
+                 n_elites = 0):
         super(SymbolicRegressor, self).__init__(
             population_size=population_size,
             generations=generations,
@@ -845,7 +960,8 @@ class SymbolicRegressor(RegressorMixin, BaseSymbolic):
             low_memory=low_memory,
             n_jobs=n_jobs,
             verbose=verbose,
-            random_state=random_state)
+            random_state=random_state,
+            n_elites = n_elites)
 
     def __str__(self):
         """Overloads `print` output of the object to resemble a LISP tree."""
@@ -1061,6 +1177,10 @@ class SymbolicClassifier(ClassifierMixin, BaseSymbolic):
         If RandomState instance, random_state is the random number generator;
         If None, the random number generator is the RandomState instance used
         by `np.random`.
+
+    n_elites : int, optional (default=0)
+        The number of best programs from the previous generation to preserve
+        unaltered into the next generation. Must be between 0 and `population_size`.
 
     Attributes
     ----------
