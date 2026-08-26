@@ -485,7 +485,6 @@ class _Program(object):
         if parsimony_coefficient is None:
             parsimony_coefficient = self.parsimony_coefficient
         penalty = parsimony_coefficient * len(self.program) * self.metric.sign * self.raw_fitness_
-        if (self.metric.sign > 0): penalty = abs(penalty)
         return self.raw_fitness_ - penalty
 
     def get_subtree(self, random_state, program=None):

@@ -12,12 +12,13 @@ computer programs.
 import itertools
 import math
 from abc import ABCMeta, abstractmethod
+from asyncio import constants
 from time import time
 from warnings import warn
 
 import numpy as np
 from joblib import Parallel, delayed
-from scipy.stats import rankdata
+from scipy.stats import rankdata, trim_mean
 from sklearn.base import BaseEstimator
 from sklearn.base import RegressorMixin, TransformerMixin, ClassifierMixin
 from sklearn.exceptions import NotFittedError
@@ -38,7 +39,7 @@ __all__ = ['SymbolicRegressor', 'SymbolicClassifier', 'SymbolicTransformer']
 MAX_INT = np.iinfo(np.int32).max
 
 
-def _parallel_evolve(n_programs, inti_program, parents, X, y, sample_weight, seeds, params):
+def _parallel_evolve(n_programs, inti_program, parents, X, y, sample_weight, seeds, params, is_predator = False, competitive_constant = 10):
     """Private function used to build a batch of programs within a job."""
     n_samples, n_features = X.shape
     # Unpack parameters
@@ -62,7 +63,7 @@ def _parallel_evolve(n_programs, inti_program, parents, X, y, sample_weight, see
         """Find the fittest individual from a sub-population."""
         contenders = random_state.randint(0, len(parents), tournament_size)
         fitness = [parents[p].fitness_ for p in contenders]
-        if metric.greater_is_better:
+        if metric.greater_is_better or is_predator:
             parent_index = contenders[np.argmax(fitness)]
         else:
             parent_index = contenders[np.argmin(fitness)]
@@ -73,39 +74,41 @@ def _parallel_evolve(n_programs, inti_program, parents, X, y, sample_weight, see
         origin = parents[origin_idx]
         candidate_indices = random_state.randint(0, len(parents), tournament_size - 1)
         contenders = np.append(candidate_indices, origin_idx)
-        scores = [(parents[p].competitive_value(origin, constant= 1)) for p in contenders]
-        if metric.greater_is_better:
+        scores = [(parents[p].competitive_value(origin, constant= competitive_constant)) for p in contenders]
+        if metric.greater_is_better or is_predator:
             winner_index = contenders[np.argmax(scores)]
         else:
             winner_index = contenders[np.argmin(scores)]
         return parents[winner_index], winner_index
 
+    def _tournament_similarity(mate, random_state, catch_size):
+        """Find the most similar individual from a tournament sub-population."""
+        contenders = random_state.randint(0, len(parents), catch_size)
+        similarities = [parents[p].similarity(mate) for p in contenders]
+        parent_index = contenders[np.argmax(similarities)]
+        return parents[parent_index], parent_index, max(similarities)
+
     # Build programs
     programs = []
+    random_state = check_random_state(seeds[0])
 
     for i in range(n_programs):
 
         random_state = check_random_state(seeds[i])
-
-        # if parents is not None:
-        #     selected_parents = [_competitive_tournament(inti_program + p_idx)[0] for p_idx in range(len(parents))]
-        #     parents = selected_parents
-        #         parent_index = (i + inti_program) % len(parents)
-        #         parent = parents[parent_index]
 
         if parents is None:
             program = None
             genome = None
         else:
             method = random_state.uniform()
-            parent, parent_index = _tournament()
+            # parent, parent_index = _tournament()
+            origin_index = (i + inti_program) % len(parents)
+            parent, parent_index = _competitive_tournament(origin_index)
 
             if method < method_probs[0]:
                 # crossover
-                donor, donor_index = _tournament()
-                # donor_index = (parent_index +1) % len(parents)
-                # donor = parents[donor_index]
-
+                # donor, donor_index = _tournament()
+                donor, donor_index, _ = _tournament_similarity(parent, random_state, tournament_size)
                 program, removed, remains = parent.crossover(donor.program,
                                                              random_state)
                 genome = {'method': 'Crossover',
@@ -168,10 +171,11 @@ def _parallel_evolve(n_programs, inti_program, parents, X, y, sample_weight, see
         curr_sample_weight[not_indices] = 0
         oob_sample_weight[indices] = 0
 
-        program.raw_fitness_ = program.raw_fitness(X, y, curr_sample_weight)
-        if max_samples < n_samples:
-            # Calculate OOB fitness
-            program.oob_fitness_ = program.raw_fitness(X, y, oob_sample_weight)
+        if not is_predator:
+            program.raw_fitness_ = program.raw_fitness(X, y, curr_sample_weight)
+            if max_samples < n_samples:
+                # Calculate OOB fitness
+                program.oob_fitness_ = program.raw_fitness(X, y, oob_sample_weight)
 
         programs.append(program)
 
@@ -207,14 +211,17 @@ def _penalty_prey(n_programs, init_program, preys, predators, X, y, sample_weigh
 
         for j in range(catch_num):
             prey, prey_index, similarity = _tournament_similarity(predator, random_state, catch_size)
+            predator.fitness_ += predator.similarity(prey)
 
             # Penalize and Calculate Fitness
             if metric.greater_is_better:
                 new_preys[prey_index].fitness_ /= 1 + (catch_penalty * similarity)
-                predator.fitness_ += predator.similarity(prey)
             else:
-                new_preys[prey_index].fitness_ += 1 + (catch_penalty * similarity)
-                predator.fitness_ += (1 - predator.similarity(prey))
+                new_preys[prey_index].fitness_ *= 1 + (catch_penalty * similarity)
+
+        # Calculate parsimony_coefficient
+        penalty = predator.parsimony_coefficient * len(predator.program) * 1 * predator.fitness_
+        predator.fitness_ -= penalty
 
     # 3. Return brand-new population objects
     return new_preys, new_predators
@@ -231,6 +238,16 @@ def _calculate_distribution(population):
             number_of_pairs += 1
 
     return total_distance / number_of_pairs
+
+def _calculate_single_distribution(population, best_prog):
+    total_distance = 0
+
+    for i in range(len(population)):
+        similarity = population[i].similarity(best_prog)
+        distance = 1 - similarity
+        total_distance += distance
+
+    return total_distance / len(population)
 
 class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
 
@@ -275,7 +292,8 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
                  predator_population_size= 200,
                  catch_num = 20,
                  catch_penalty = 1.5,
-                 catch_size = 5):
+                 catch_size = 5,
+                 competitive_constant = 10):
 
         self.population_size = population_size
         self.hall_of_fame = hall_of_fame
@@ -303,17 +321,20 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
         self.n_jobs = n_jobs
         self.verbose = verbose
         self.random_state = random_state
-        self.best_programs_per_gen = []
+        self.n_elites = n_elites
 
+        # Predator-Prey Model Params
         self.catch_penalty = catch_penalty
         self.catch_size = catch_size
         self.catch_num = catch_num
         self.predator_population_size = predator_population_size
-        self.n_elites = n_elites
+        self.competitive_constant = competitive_constant
 
         # Data record
         self.best_programs_per_gen = []
         self.population_distribution = []
+        self.fitness_robust_average  = []
+        self.fitness_interquartile_range = []
 
     def _verbose_reporter(self, run_details=None):
         """A report of the progress of the evolution process.
@@ -592,16 +613,15 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
 
             # Save Elites
             if self.n_elites > 0 and prey_parents is not None:
-                parent_fitness = np.array([p.fitness_ for p in prey_parents])
-                sign = -1 if self._metric.greater_is_better else 1
-                elites_index = np.argsort(sign * parent_fitness)[:self.n_elites]
+                parent_fitness = np.array([p.raw_fitness_ for p in prey_parents])
+                elites_index = np.argsort(-1 * self._metric.sign * parent_fitness)[:self.n_elites]
                 for original_idx in elites_index:
                     parent = prey_parents[original_idx]
 
-                    # Generate cloned program using reproduction()
+                    # Generate cloned program using deepcopy
                     elite_program = copy.deepcopy(parent)
                     elite_program.parents = {
-                        'method': 'Reproduction',
+                        'method': 'Save Elite',
                         'parent_idx': original_idx,
                         'parent_nodes': []
                     }
@@ -627,7 +647,8 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
                 prey_batches = Parallel(n_jobs=self.n_jobs, verbose=int(self.verbose > 1))(
                     delayed(_parallel_evolve)(
                         n_programs[i], starts[i], prey_parents, X, y, sample_weight,
-                        seeds[starts[i]:starts[i + 1]], params
+                        seeds[starts[i]:starts[i + 1]], params,
+                        competitive_constant = self.competitive_constant
                     )
                     for i in range(n_jobs)
                 )
@@ -637,7 +658,8 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
             predator_batches = Parallel(n_jobs=n_jobs_prd, verbose=int(self.verbose > 1))(
                 delayed(_parallel_evolve)(
                     n_programs_prd[i], starts_prd[i], prd_parents, X, y, sample_weight,
-                    seeds_prd[starts_prd[i]:starts_prd[i + 1]], params
+                    seeds_prd[starts_prd[i]:starts_prd[i + 1]], params,
+                    is_predator= True, competitive_constant= self.competitive_constant
                 )
                 for i in range(n_jobs_prd)
             )
@@ -662,12 +684,12 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
             # 5: Store generation outputs
             self._programs.append(prey_pop)
             self._predator_pops.append(predator_pop)
-            if self._metric.greater_is_better:
-                best_prog = prey_pop[np.argmax([p.raw_fitness_ for p in prey_pop])]
-            else:
-                best_prog = prey_pop[np.argmin([p.raw_fitness_ for p in prey_pop])]
+            best_prog = prey_pop[np.argmax([p.raw_fitness_ * self._metric.sign for p in prey_pop])]
             self.best_programs_per_gen.append(best_prog)
-            # self.population_distribution.append(_calculate_distribution(prey_pop))
+            q75, q25 = np.percentile(fitness, [75, 25])
+            self.fitness_robust_average.append(trim_mean(fitness, proportiontocut=0.25))
+            self.fitness_interquartile_range.append(abs(q75 - q25))
+            self.population_distribution.append(_calculate_single_distribution(prey_pop, best_prog))
 
 
             # Remove old programs that didn't make it into the new population.
@@ -991,7 +1013,9 @@ class SymbolicRegressor(RegressorMixin, BaseSymbolic):
                 predator_population_size = 200,
                 catch_num = 20,
                 catch_penalty = 1.5,
-                catch_size = 5):
+                catch_size = 5,
+                competitive_constant = 10,
+             ):
         super(SymbolicRegressor, self).__init__(
             population_size=population_size,
             generations=generations,
@@ -1020,7 +1044,8 @@ class SymbolicRegressor(RegressorMixin, BaseSymbolic):
             catch_num = catch_num,
             catch_penalty = catch_penalty,
             catch_size = catch_size,
-            n_elites = n_elites
+            n_elites = n_elites,
+            competitive_constant = competitive_constant
         )
 
     def __str__(self):

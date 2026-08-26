@@ -10,6 +10,7 @@ import copy
 # License: BSD 3 clause
 
 import itertools
+import random
 from abc import ABCMeta, abstractmethod
 from time import time
 from warnings import warn
@@ -24,6 +25,7 @@ from sklearn.utils import compute_sample_weight
 from sklearn.utils.multiclass import check_classification_targets
 from sklearn.utils.multiclass import type_of_target
 from sklearn.utils.validation import validate_data, _check_sample_weight
+from scipy.stats import trim_mean
 
 from ._program import _Program
 from .fitness import _fitness_map, _Fitness
@@ -154,61 +156,40 @@ def _parallel_evolve(n_programs, parents, X, y, sample_weight, seeds, params):
 
     return programs
 
-def reproduction(parent, parent_index):
+def reproduction(parent, parent_index, X, y, sample_weight, params, seed):
     """Deep copy elite parent and assign updated reproduction genome."""
     program = copy.deepcopy(parent)
     program.parents = {
-        'method': 'Reproduction',
+        'method': 'Elite Copy',
         'parent_idx': parent_index,
         'parent_nodes': []
     }
 
-    return program
+    random_state = check_random_state(seed)
+    program._indices_state = None
 
-# def reproduction(X, parent, parent_index, params, seed):
-#     """Private function used to reproduce elites program """
-#     n_samples, n_features = X.shape
-#     # Unpack parameters
-#     tournament_size = params['tournament_size']
-#     function_set = params['function_set']
-#     arities = params['arities']
-#     init_depth = params['init_depth']
-#     init_method = params['init_method']
-#     const_range = params['const_range']
-#     metric = params['_metric']
-#     transformer = params['_transformer']
-#     parsimony_coefficient = params['parsimony_coefficient']
-#     method_probs = params['method_probs']
-#     p_point_replace = params['p_point_replace']
-#     max_samples = params['max_samples']
-#     feature_names = params['feature_names']
-#
-#     program = parent.reproduce()
-#     genome = {'method': 'Reproduction',
-#               'parent_idx': parent_index,
-#               'parent_nodes': []}
-#
-#     random_state = check_random_state(seed)
-#
-#     program = _Program(function_set=function_set,
-#                        arities=arities,
-#                        init_depth=init_depth,
-#                        init_method=init_method,
-#                        n_features=n_features,
-#                        metric=metric,
-#                        transformer=transformer,
-#                        const_range=const_range,
-#                        p_point_replace=p_point_replace,
-#                        parsimony_coefficient=parsimony_coefficient,
-#                        feature_names=feature_names,
-#                        random_state=random_state,
-#                        program=program)
-#
-#     program.raw_fitness_ = parent.raw_fitness_
-#     program.oob_fitness_ = program.raw_fitness_
-#     program.parents = genome
-#
-#     return program
+    max_samples = params['max_samples']
+    n_samples, n_features = X.shape
+    max_samples = int(max_samples * n_samples)
+
+    # Draw samples, using sample weights, and then fit
+    if sample_weight is None:
+        curr_sample_weight = np.ones((n_samples,))
+    else:
+        curr_sample_weight = sample_weight.copy()
+    oob_sample_weight = curr_sample_weight.copy()
+    indices, not_indices = program.get_all_indices(n_samples,
+                                                   max_samples,
+                                                   random_state)
+    curr_sample_weight[not_indices] = 0
+    oob_sample_weight[indices] = 0
+    program.raw_fitness_ = program.raw_fitness(X, y, curr_sample_weight)
+
+    if max_samples < n_samples:
+        # Calculate OOB fitness
+        program.oob_fitness_ = program.raw_fitness(X, y, oob_sample_weight)
+
+    return program
 
 def _calculate_distribution(population):
     total_distance = 0
@@ -223,6 +204,15 @@ def _calculate_distribution(population):
 
     return total_distance / number_of_pairs
 
+def _calculate_single_distribution(population, best_prog):
+    total_distance = 0
+
+    for i in range(len(population)):
+        similarity = population[i].similarity(best_prog)
+        distance = 1 - similarity
+        total_distance += distance
+
+    return total_distance / len(population)
 
 class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
 
@@ -295,6 +285,8 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
         # Data record
         self.best_programs_per_gen = []
         self.population_distribution = []
+        self.fitness_interquartile_range = []
+        self.fitness_robust_average = []
 
     def _verbose_reporter(self, run_details=None):
         """A report of the progress of the evolution process.
@@ -566,15 +558,14 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
                 # Save Elites
                 if self.n_elites > 0 and parents is not None:
                     parent_fitness = np.array([p.fitness_ for p in parents])
-                    sign = -1 if self._metric.greater_is_better else 1
-                    elites_index = np.argsort(sign * parent_fitness)[:self.n_elites]
+                    elites_index = np.argsort(-1 * self._metric.sign * parent_fitness)[:self.n_elites]
                     for original_idx in elites_index:
                         parent = parents[original_idx]
 
-                        # Generate cloned program using reproduction()
+                        # Generate cloned program using deepcopy
                         elite_program = copy.deepcopy(parent)
                         elite_program.parents = {
-                            'method': 'Reproduction',
+                            'method': 'Save Elite',
                             'parent_idx': original_idx,
                             'parent_nodes': []
                         }
@@ -615,12 +606,12 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
                 program.fitness_ = program.fitness(parsimony_coefficient)
 
             self._programs.append(population)
-            if self._metric.greater_is_better:
-                best_prog = population[np.argmax([p.raw_fitness_ for p in population])]
-            else:
-                best_prog = population[np.argmin([p.raw_fitness_ for p in population])]
+            best_prog = population[np.argmax([p.raw_fitness_ * self._metric.sign for p in population])]
             self.best_programs_per_gen.append(best_prog)
-            # self.population_distribution.append(_calculate_distribution(population))
+            q75, q25 = np.percentile(fitness, [75, 25])
+            self.fitness_robust_average.append(trim_mean(fitness, proportiontocut=0.25))
+            self.fitness_interquartile_range.append(abs(q75 - q25))
+            self.population_distribution.append(_calculate_single_distribution(population, best_prog))
 
             # Remove old programs that didn't make it into the new population.
             if not self.low_memory:
