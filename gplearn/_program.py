@@ -746,7 +746,8 @@ class _Program(object):
         constant : The maximum penalty rate + 1
 
         """
-        if constant < 0: constant = 0;
+        if constant <= 0:
+            return 1
         epsilon = 1e-10
         similarity = max((1 - self.similarity(prog2)), epsilon)
         return  1 + (similarity ** 2) * constant

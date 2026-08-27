@@ -39,7 +39,7 @@ __all__ = ['SymbolicRegressor', 'SymbolicClassifier', 'SymbolicTransformer']
 MAX_INT = np.iinfo(np.int32).max
 
 
-def _parallel_evolve(n_programs, inti_program, parents, X, y, sample_weight, seeds, params, is_predator = False, competitive_constant = 10):
+def _parallel_evolve(n_programs, inti_program, parents, X, y, sample_weight, seeds, params, is_predator = False):
     """Private function used to build a batch of programs within a job."""
     n_samples, n_features = X.shape
     # Unpack parameters
@@ -56,6 +56,7 @@ def _parallel_evolve(n_programs, inti_program, parents, X, y, sample_weight, see
     p_point_replace = params['p_point_replace']
     max_samples = params['max_samples']
     feature_names = params['feature_names']
+    competitive_constant = params['predator_competitive_consts' if is_predator else 'prey_competitive_consts']
 
     max_samples = int(max_samples * n_samples)
 
@@ -249,6 +250,34 @@ def _calculate_single_distribution(population, best_prog):
 
     return total_distance / len(population)
 
+def _save_elites(parents, params, is_predator):
+    metric = params['_metric']
+    elites_index = []
+    elites_copied = []
+    n_elites = params['predator_n_elites' if is_predator else 'prey_n_elites']
+
+
+    if n_elites > 0 and parents is not None:
+        if is_predator:
+            parent_fitness = np.array([p.fitness_ for p in parents])
+            elites_index = np.argsort( 1 * parent_fitness)[:n_elites]
+        else:
+            parent_fitness = np.array([p.raw_fitness_ for p in parents])
+            elites_index = np.argsort(-1 * metric.sign * parent_fitness)[:n_elites]
+
+        for original_idx in elites_index:
+            parent = parents[original_idx]
+
+            # Generate cloned program using deepcopy
+            elite_program = copy.deepcopy(parent)
+            elite_program.parents = {
+                'method': 'Save Elite',
+                'parent_idx': original_idx,
+                'parent_nodes': []
+            }
+            elites_copied.append(elite_program)
+    return elites_index, elites_copied
+
 class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
 
     """Base class for symbolic regression / classification estimators.
@@ -287,13 +316,15 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
                  n_jobs=1,
                  verbose=0,
                  random_state=None,
-                 n_elites=0,
+                 prey_n_elites=0,
+                 predator_n_elites=0,
 
                  predator_population_size= 200,
                  catch_num = 20,
                  catch_penalty = 1.5,
                  catch_size = 5,
-                 competitive_constant = 10):
+                 prey_competitive_consts = 10,
+                 predator_competitive_consts = 1):
 
         self.population_size = population_size
         self.hall_of_fame = hall_of_fame
@@ -321,20 +352,26 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
         self.n_jobs = n_jobs
         self.verbose = verbose
         self.random_state = random_state
-        self.n_elites = n_elites
+        self.prey_n_elites = prey_n_elites
+        self.predator_n_elites = predator_n_elites
 
         # Predator-Prey Model Params
         self.catch_penalty = catch_penalty
         self.catch_size = catch_size
         self.catch_num = catch_num
         self.predator_population_size = predator_population_size
-        self.competitive_constant = competitive_constant
+
+        self.prey_competitive_consts = prey_competitive_consts
+        self.predator_competitive_consts = predator_competitive_consts
+
 
         # Data record
         self.best_programs_per_gen = []
         self.population_distribution = []
         self.fitness_robust_average  = []
         self.fitness_interquartile_range = []
+        self.predator_best_fitness = []
+        self.predator_population_distribution = []
 
     def _verbose_reporter(self, run_details=None):
         """A report of the progress of the evolution process.
@@ -544,10 +581,16 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
                 raise ValueError('Invalid arity for `transformer`. Expected 1, '
                                  'got %d.' % (self._transformer.arity))
 
-        if not (0 <= self.n_elites <= self.population_size):
+        if not (0 <= self.prey_n_elites <= self.population_size):
             raise ValueError(
-                f"Valid integer values for `n_elites` are 0 <= n_elites <= population_size ({self.population_size}). "
-                f"Got {self.n_elites}."
+                f"Valid integer values for `prey_n_elites` are 0 <= prey_n_elites <= population_size ({self.population_size}). "
+                f"Got {self.prey_n_elites}."
+            )
+
+        if not (0 <= self.predator_n_elites <= self.population_size):
+            raise ValueError(
+                f"Valid integer values for `predator_n_elites` are 0 <= predator_n_elites <= preadtor population_size ({self.predator_population_size}). "
+                f"Got {self.predator_n_elites}."
             )
 
         params = self.get_params()
@@ -597,8 +640,6 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
         for gen in range(prior_generations, self.generations):
 
             start_time = time()
-            elites_index = []
-            elites_copied = []
 
             prey_parents    = self._programs[gen - 1]      if gen > 0 else None
             prd_parents     = self._predator_pops[gen - 1] if gen > 0 else None
@@ -611,21 +652,8 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
             n_jobs_prd, n_programs_prd, starts_prd = _partition_estimators(self.predator_population_size, self.n_jobs)
             seeds_prd = random_state.randint(MAX_INT, size=self.predator_population_size)
 
-            # Save Elites
-            if self.n_elites > 0 and prey_parents is not None:
-                parent_fitness = np.array([p.raw_fitness_ for p in prey_parents])
-                elites_index = np.argsort(-1 * self._metric.sign * parent_fitness)[:self.n_elites]
-                for original_idx in elites_index:
-                    parent = prey_parents[original_idx]
-
-                    # Generate cloned program using deepcopy
-                    elite_program = copy.deepcopy(parent)
-                    elite_program.parents = {
-                        'method': 'Save Elite',
-                        'parent_idx': original_idx,
-                        'parent_nodes': []
-                    }
-                    elites_copied.append(elite_program)
+            # Save Elites (Prey)
+            prey_elites_index, prey_elites_copied = _save_elites(prey_parents, params, is_predator= False)
 
             # 1: Apply predator penalties to existing prey parents (if past Gen 0)
             if (self.predator_population_size > 0):
@@ -640,15 +668,18 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
                     )
                     # Properly unpack the list of tuples returned by parallel workers
                     prey_parents   = list(itertools.chain.from_iterable([res[0] for res in penalty_results]))
-                    prd_parents    = list(itertools.chain.from_iterable([res[0] for res in penalty_results]))
+                    prd_parents    = list(itertools.chain.from_iterable([res[1] for res in penalty_results]))
+
+            # Save Elites (Predator)
+            prd_elites_index, prd_elites_copied = _save_elites(prd_parents, params, is_predator= True)
 
             # 2: Evolve Prey Population
-            if (self.predator_population_size > 0):
+            if (self.population_size > 0):
                 prey_batches = Parallel(n_jobs=self.n_jobs, verbose=int(self.verbose > 1))(
                     delayed(_parallel_evolve)(
                         n_programs[i], starts[i], prey_parents, X, y, sample_weight,
                         seeds[starts[i]:starts[i + 1]], params,
-                        competitive_constant = self.competitive_constant
+                        is_predator= False
                     )
                     for i in range(n_jobs)
                 )
@@ -659,16 +690,19 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
                 delayed(_parallel_evolve)(
                     n_programs_prd[i], starts_prd[i], prd_parents, X, y, sample_weight,
                     seeds_prd[starts_prd[i]:starts_prd[i + 1]], params,
-                    is_predator= True, competitive_constant= self.competitive_constant
+                    is_predator= True
                 )
                 for i in range(n_jobs_prd)
             )
             predator_pop = list(itertools.chain.from_iterable(predator_batches))
 
             # 4: Replace Elites
-            if gen > 0 and self.n_elites > 0:
-                for original_idx, elite_program in zip(elites_index, elites_copied):
+            if gen > 0 and self.prey_n_elites > 0:
+                for original_idx, elite_program in zip(prey_elites_index, prey_elites_copied):
                     prey_pop[int(original_idx)] = elite_program
+            if gen > 0 and self.predator_n_elites > 0:
+                for original_idx, elite_program in zip(prd_elites_index, prd_elites_copied):
+                    predator_pop[int(original_idx)] = elite_program
 
             # 5: Calculate Fitness
             fitness = [program.raw_fitness_ for program in prey_pop]
@@ -686,10 +720,15 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
             self._predator_pops.append(predator_pop)
             best_prog = prey_pop[np.argmax([p.raw_fitness_ * self._metric.sign for p in prey_pop])]
             self.best_programs_per_gen.append(best_prog)
-            q75, q25 = np.percentile(fitness, [75, 25])
+            # q75, q25 = np.percentile(fitness, [75, 25])
             self.fitness_robust_average.append(trim_mean(fitness, proportiontocut=0.25))
-            self.fitness_interquartile_range.append(abs(q75 - q25))
-            self.population_distribution.append(_calculate_single_distribution(prey_pop, best_prog))
+            # self.fitness_interquartile_range.append(abs(q75 - q25))
+            if prey_parents is not None:
+                self.population_distribution.append(_calculate_single_distribution(prey_parents, best_prog))
+            if prd_parents is not None:
+                self.predator_population_distribution.append(_calculate_distribution(prd_parents))
+                self.predator_best_fitness.append(max([p.fitness_ for p in prd_parents]))
+
 
 
             # Remove old programs that didn't make it into the new population.
@@ -953,9 +992,13 @@ class SymbolicRegressor(RegressorMixin, BaseSymbolic):
         If None, the random number generator is the RandomState instance used
         by `np.random`.
 
-    n_elites : int, optional (default=0)
+    prey_n_elites : int, optional (default=0)
         The number of best programs from the previous generation to preserve
-        unaltered into the next generation. Must be between 0 and `population_size`.
+        unaltered into the next generation in prey population. Must be between 0 and `population_size`.
+
+    predator_n_elites : int, optional (default=0)
+        The number of best programs from the previous generation to preserve
+        unaltered into the next generation in predator population. Must be between 0 and `predator_population_size`.
 
 
     Attributes
@@ -1008,13 +1051,15 @@ class SymbolicRegressor(RegressorMixin, BaseSymbolic):
                  n_jobs=1,
                  verbose=0,
                  random_state=None,
-                 n_elites=0,
+                 prey_n_elites=0,
+                 predator_n_elites=0,
 
-                predator_population_size = 200,
+        predator_population_size = 200,
                 catch_num = 20,
                 catch_penalty = 1.5,
                 catch_size = 5,
-                competitive_constant = 10,
+                prey_competitive_consts = 10,
+                predator_competitive_consts = 1,
              ):
         super(SymbolicRegressor, self).__init__(
             population_size=population_size,
@@ -1039,13 +1084,15 @@ class SymbolicRegressor(RegressorMixin, BaseSymbolic):
             n_jobs=n_jobs,
             verbose=verbose,
             random_state=random_state,
+            prey_n_elites= prey_n_elites,
+            predator_n_elites=predator_n_elites,
 
             predator_population_size = predator_population_size,
             catch_num = catch_num,
             catch_penalty = catch_penalty,
             catch_size = catch_size,
-            n_elites = n_elites,
-            competitive_constant = competitive_constant
+            prey_competitive_consts = prey_competitive_consts,
+            predator_competitive_consts = predator_competitive_consts,
         )
 
     def __str__(self):
