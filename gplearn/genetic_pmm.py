@@ -212,7 +212,7 @@ def _penalty_prey(n_programs, init_program, preys, predators, X, y, sample_weigh
 
         for j in range(catch_num):
             prey, prey_index, similarity = _tournament_similarity(predator, random_state, catch_size)
-            predator.fitness_ += predator.similarity(prey)
+            predator.fitness_ += similarity
 
             # Penalize and Calculate Fitness
             if metric.greater_is_better:
@@ -233,8 +233,8 @@ def _calculate_distribution(population):
 
     for i in range(len(population) -1):
         for j in range(i, len(population)):
-            similarity = population[i].similarity(population[j])
-            distance = 1 - similarity
+            fast_similarity = population[i].similarity(population[j])
+            distance = 1 - fast_similarity
             total_distance += distance
             number_of_pairs += 1
 
@@ -244,8 +244,8 @@ def _calculate_single_distribution(population, best_prog):
     total_distance = 0
 
     for i in range(len(population)):
-        similarity = population[i].similarity(best_prog)
-        distance = 1 - similarity
+        fast_similarity = population[i].similarity(best_prog)
+        distance = 1 - fast_similarity
         total_distance += distance
 
     return total_distance / len(population)

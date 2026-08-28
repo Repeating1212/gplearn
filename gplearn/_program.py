@@ -156,6 +156,8 @@ class _Program(object):
             # Create a naive random program
             self.program = self.build_program(random_state)
 
+        # Calculate Similarity Vector
+        # self.similarity_vec = self.build_program_weight_vector()
         self.raw_fitness_ = None
         self.fitness_ = None
         self.parents = None
@@ -674,6 +676,8 @@ class _Program(object):
         """
         Calculates tree similarity directly on gplearn flattened lists without extra classes.
         """
+
+        # print("CALLED SIMILARITY FUNCTION")
         if self is None or prog2 is None:
             return 0.0
 
@@ -705,7 +709,8 @@ class _Program(object):
             return False
 
         def compare_subtrees(idx1, idx2, depth):
-            weight = float(max_depth - depth + 1) / (max_depth + 1)
+            weight = float(max_depth - depth + 1)
+            # weight = float( 1 / (2**depth))
             result[1] += weight
 
             n1, n2 = p1[idx1], p2[idx2]
@@ -736,6 +741,103 @@ class _Program(object):
 
         compare_subtrees(0, 0, 0)
         return 0.0 if result[1] == 0 else result[0] / result[1]
+
+    def _get_feature_map(self):
+        """Creates a dictionary mapping every function name and feature index to a vector slot."""
+        feature_map = {}
+        idx = 0
+
+        # 1. Map all function names (e.g., 'add', 'sub', 'mul')
+        for func in self.function_set:
+            feature_map[func.name] = idx
+            idx += 1
+
+        # 2. Map all feature indices (0, 1, 2, ... n_features - 1)
+        for feat_idx in range(self.n_features):
+            feature_map[feat_idx] = idx
+            idx += 1
+
+        # 3. Map Constant Bins
+        constant_bins = [
+            'CONST_Q0_To_Q1',  # c < min + 0.25 * range
+            'CONST_Q1_To_Q2',  # min + 0.25 * range <= c < min + 0.50 * range
+            'CONST_Q2_To_Q3',  # min + 0.50 * range <= c < min + 0.75 * range
+            'CONST_Q3_To_Q4'   # c >= min + 0.75 * range
+        ]
+
+        for bin_name in constant_bins:
+            feature_map[bin_name] = idx
+            idx += 1
+
+        return feature_map
+
+    def _get_constant_bin(self, val):
+        """Categorizes a float constant into a fixed bin key."""
+        min_c, max_c = self.const_range
+        span = max_c - min_c
+        ratio = (val - min_c) / span if span <= 0  else 0.0
+
+        if ratio < 0.25:
+            return 'CONST_Q0_To_Q1'
+        elif ratio < 0.50:
+            return 'CONST_Q1_To_Q2'
+        elif ratio < 0.75:
+            return 'CONST_Q2_To_Q3'
+        else:
+            return 'CONST_Q3_To_Q4'
+
+
+    def build_program_weight_vector(self, max_depth_limit=6):
+        """
+        Pre-computes node weights once per program.
+        feature_map maps node names (e.g., 'add', 0 for X0) to vector indices.
+        """
+        p = self.program
+        feature_map = self._get_feature_map()
+        max_depth = min(self.depth_, max_depth_limit)
+        vec = np.zeros(len(feature_map), dtype=np.float64)
+
+        # Track depth of each node in the flattened prefix list
+        # (gplearn prefix format: parent arity tells us depth)
+        depth_stack = [0]
+
+        for node in p:
+            depth = depth_stack.pop()
+
+            # Weight decreases with depth, matching your logic
+            # weight = float(max_depth - depth + 1) / (max_depth + 1) if depth <= max_depth else 0.0
+            weight = float( 1 / 2 ** depth) if depth <= max_depth else 0.0
+
+
+            # Identify key (ignore constants/floats)
+            key = None
+            if hasattr(node, 'name'):
+                key = node.name  # Functions (e.g., 'add', 'mul')
+                # Push depth for children (right to left stack)
+                for _ in range(node.arity):
+                    depth_stack.append(depth + 1)
+            elif isinstance(node, int):
+                key = node  # Feature variable index (e.g., X0, X1)
+            elif isinstance(node, (float, np.float32, np.float64)):
+                key = self._get_constant_bin(node)  # Map float to constant bin
+
+            if key in feature_map:
+                vec[feature_map[key]] += weight
+
+        return vec
+
+    def fast_similarity(self, program2):
+        """
+        Computes weighted similarity in Range (0, 1)
+        """
+        intersection = np.minimum(self.similarity_vec, program2.similarity_vec).sum()
+        union = np.maximum(self.similarity_vec, program2.similarity_vec).sum()
+        if union != 0:
+            value = intersection / union
+            if value < 0: print(f"Values Error: {value}")
+            if value > 1: print(f"Values Error: {value}")
+
+        return 0.0 if union == 0 else intersection / union
 
     def distance(self, prog2, constant = 10):
 
