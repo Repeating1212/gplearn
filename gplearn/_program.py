@@ -157,7 +157,7 @@ class _Program(object):
             self.program = self.build_program(random_state)
 
         # Calculate Similarity Vector
-        # self.similarity_vec = self.build_program_weight_vector()
+        self.similarity_vec = self.build_program_weight_vector()
         self.raw_fitness_ = None
         self.fitness_ = None
         self.parents = None
@@ -709,7 +709,7 @@ class _Program(object):
             return False
 
         def compare_subtrees(idx1, idx2, depth):
-            weight = float(max_depth - depth + 1)
+            weight = float(max_depth - depth + 1) / (max_depth + 1)
             # weight = float( 1 / (2**depth))
             result[1] += weight
 
@@ -787,7 +787,7 @@ class _Program(object):
             return 'CONST_Q3_To_Q4'
 
 
-    def build_program_weight_vector(self, max_depth_limit=6):
+    def build_program_weight_vector(self, max_depth_limit=10):
         """
         Pre-computes node weights once per program.
         feature_map maps node names (e.g., 'add', 0 for X0) to vector indices.
@@ -805,8 +805,8 @@ class _Program(object):
             depth = depth_stack.pop()
 
             # Weight decreases with depth, matching your logic
-            # weight = float(max_depth - depth + 1) / (max_depth + 1) if depth <= max_depth else 0.0
-            weight = float( 1 / 2 ** depth) if depth <= max_depth else 0.0
+            # weight = float(max_depth - depth + 1) if depth <= max_depth else 0.0
+            weight = float((max_depth - depth) ** 2 )if depth <= max_depth else 0.0
 
 
             # Identify key (ignore constants/floats)
@@ -832,11 +832,6 @@ class _Program(object):
         """
         intersection = np.minimum(self.similarity_vec, program2.similarity_vec).sum()
         union = np.maximum(self.similarity_vec, program2.similarity_vec).sum()
-        if union != 0:
-            value = intersection / union
-            if value < 0: print(f"Values Error: {value}")
-            if value > 1: print(f"Values Error: {value}")
-
         return 0.0 if union == 0 else intersection / union
 
     def distance(self, prog2, constant = 10):
@@ -851,7 +846,7 @@ class _Program(object):
         if constant <= 0:
             return 1
         epsilon = 1e-10
-        similarity = max((1 - self.similarity(prog2)), epsilon)
+        similarity = max((1 - self.fast_similarity(prog2)), epsilon)
         return  1 + (similarity ** 2) * constant
 
     def competitive_value(self, prog2, constant = 10):

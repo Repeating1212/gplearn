@@ -85,7 +85,7 @@ def _parallel_evolve(n_programs, inti_program, parents, X, y, sample_weight, see
     def _tournament_similarity(mate, random_state, catch_size):
         """Find the most similar individual from a tournament sub-population."""
         contenders = random_state.randint(0, len(parents), catch_size)
-        similarities = [parents[p].similarity(mate) for p in contenders]
+        similarities = [parents[p].fast_similarity(mate) for p in contenders]
         parent_index = contenders[np.argmax(similarities)]
         return parents[parent_index], parent_index, max(similarities)
 
@@ -198,7 +198,7 @@ def _penalty_prey(n_programs, init_program, preys, predators, X, y, sample_weigh
     def _tournament_similarity(mate, random_state, catch_size):
         """Find the most similar individual from a tournament sub-population."""
         contenders = random_state.randint(0, len(new_preys), catch_size)
-        similarities = [new_preys[p].similarity(mate) for p in contenders]
+        similarities = [new_preys[p].fast_similarity(mate) for p in contenders]
         parent_index = contenders[np.argmax(similarities)]
         return new_preys[parent_index], parent_index, max(similarities)
 
@@ -233,7 +233,7 @@ def _calculate_distribution(population):
 
     for i in range(len(population) -1):
         for j in range(i, len(population)):
-            fast_similarity = population[i].similarity(population[j])
+            fast_similarity = population[i].fast_similarity(population[j])
             distance = 1 - fast_similarity
             total_distance += distance
             number_of_pairs += 1
@@ -368,8 +368,6 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
         # Data record
         self.best_programs_per_gen = []
         self.population_distribution = []
-        self.fitness_robust_average  = []
-        self.fitness_interquartile_range = []
         self.predator_best_fitness = []
         self.predator_population_distribution = []
 
@@ -720,9 +718,6 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
             self._predator_pops.append(predator_pop)
             best_prog = prey_pop[np.argmax([p.raw_fitness_ * self._metric.sign for p in prey_pop])]
             self.best_programs_per_gen.append(best_prog)
-            # q75, q25 = np.percentile(fitness, [75, 25])
-            self.fitness_robust_average.append(trim_mean(fitness, proportiontocut=0.25))
-            # self.fitness_interquartile_range.append(abs(q75 - q25))
             if prey_parents is not None:
                 self.population_distribution.append(_calculate_single_distribution(prey_parents, best_prog))
             if prd_parents is not None:
