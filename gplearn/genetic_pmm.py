@@ -221,8 +221,8 @@ def _penalty_prey(n_programs, init_program, preys, predators, X, y, sample_weigh
                 new_preys[prey_index].fitness_ *= 1 + (catch_penalty * similarity)
 
         # Calculate parsimony_coefficient
-        penalty = predator.parsimony_coefficient * len(predator.program) * 1 * predator.fitness_
-        predator.fitness_ -= penalty
+        # penalty = predator.parsimony_coefficient * len(predator.program) * 1 * predator.fitness_
+        # predator.fitness_ -= penalty
 
     # 3. Return brand-new population objects
     return new_preys, new_predators

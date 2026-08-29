@@ -805,8 +805,9 @@ class _Program(object):
             depth = depth_stack.pop()
 
             # Weight decreases with depth, matching your logic
-            # weight = float(max_depth - depth + 1) if depth <= max_depth else 0.0
-            weight = float((max_depth - depth) ** 2 )if depth <= max_depth else 0.0
+            # weight = float(max_depth - depth + 1) / (max_depth +1) if depth <= max_depth else 0.0
+            average_node_per_depth = (max_depth + 1) / len(self.program)
+            weight = float(2 ** (average_node_per_depth - depth +1))if depth < max_depth else 0.0
 
 
             # Identify key (ignore constants/floats)
