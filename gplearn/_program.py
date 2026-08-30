@@ -798,17 +798,13 @@ class _Program(object):
         vec = np.zeros(len(feature_map), dtype=np.float64)
 
         # Track depth of each node in the flattened prefix list
-        # (gplearn prefix format: parent arity tells us depth)
         depth_stack = [0]
 
         for node in p:
             depth = depth_stack.pop()
 
-            # Weight decreases with depth, matching your logic
-            # weight = float(max_depth - depth + 1) / (max_depth +1) if depth <= max_depth else 0.0
-            average_node_per_depth = (max_depth + 1) / len(self.program)
-            weight = float(2 ** (average_node_per_depth - depth +1))if depth < max_depth else 0.0
-
+            # Weight decreases with depth
+            weight = float(2 ** - (depth +1))if depth < max_depth else 0.0
 
             # Identify key (ignore constants/floats)
             key = None
