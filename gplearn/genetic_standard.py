@@ -197,7 +197,7 @@ def _calculate_distribution(population):
 
     for i in range(len(population) -1):
         for j in range(i, len(population)):
-            similarity = population[i].similarity(population[j])
+            similarity = population[i].fast_similarity(population[j])
             distance = 1 - similarity
             total_distance += distance
             number_of_pairs += 1
@@ -213,6 +213,30 @@ def _calculate_single_distribution(population, best_prog):
         total_distance += distance
 
     return total_distance / len(population)
+
+def _save_elites(parents, params):
+    metric = params['_metric']
+    elites_index = []
+    elites_copied = []
+    n_elites = params['n_elites']
+
+    if n_elites > 0 and parents is not None:
+        parent_fitness = np.array([p.raw_fitness_ for p in parents])
+        elites_index = np.argsort(-1 * metric.sign * parent_fitness)[:n_elites]
+
+        for original_idx in elites_index:
+            parent = parents[original_idx]
+
+            # Generate cloned program using deepcopy
+            elite_program = copy.deepcopy(parent)
+            elite_program.parents = {
+                'method': 'Save Elite',
+                'parent_idx': original_idx,
+                'parent_nodes': []
+            }
+            elites_copied.append(elite_program)
+    return elites_index, elites_copied
+
 
 class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
 
@@ -547,29 +571,13 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
         for gen in range(prior_generations, self.generations):
 
             start_time = time()
-            elites_index = []
-            elites_copied = []
 
             if gen == 0:
                 parents = None
             else:
                 parents = self._programs[gen - 1]
 
-                # Save Elites
-                if self.n_elites > 0 and parents is not None:
-                    parent_fitness = np.array([p.fitness_ for p in parents])
-                    elites_index = np.argsort(-1 * self._metric.sign * parent_fitness)[:self.n_elites]
-                    for original_idx in elites_index:
-                        parent = parents[original_idx]
-
-                        # Generate cloned program using deepcopy
-                        elite_program = copy.deepcopy(parent)
-                        elite_program.parents = {
-                            'method': 'Save Elite',
-                            'parent_idx': original_idx,
-                            'parent_nodes': []
-                        }
-                        elites_copied.append(elite_program)
+            elites_index, elites_copied = _save_elites(parents, params)
 
             # Parallel loop
             n_jobs, n_programs, starts = _partition_estimators(
@@ -591,7 +599,7 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
             population = list(itertools.chain.from_iterable(population))
 
             # Replace Elites
-            if gen > 0 and self.n_elites > 0:
+            if parents is not None and self.n_elites > 0:
                 for original_idx, elite_program in zip(elites_index, elites_copied):
                     population[int(original_idx)] = elite_program
 
@@ -611,7 +619,7 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
             q75, q25 = np.percentile(fitness, [75, 25])
             self.fitness_robust_average.append(trim_mean(fitness, proportiontocut=0.25))
             self.fitness_interquartile_range.append(abs(q75 - q25))
-            self.population_distribution.append(_calculate_single_distribution(population, best_prog))
+            self.population_distribution.append(_calculate_distribution(population))
 
             # Remove old programs that didn't make it into the new population.
             if not self.low_memory:

@@ -804,7 +804,7 @@ class _Program(object):
             depth = depth_stack.pop()
 
             # Weight decreases with depth
-            weight = float(2 ** - (depth +1))if depth < max_depth else 0.0
+            weight = float(2 ** -depth)if depth < max_depth else 0.0
 
             # Identify key (ignore constants/floats)
             key = None

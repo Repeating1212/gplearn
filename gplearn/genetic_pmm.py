@@ -233,9 +233,9 @@ def _calculate_distribution(population):
 
     for i in range(len(population) -1):
         for j in range(i, len(population)):
-            fast_similarity = population[i].fast_similarity(population[j])
-            distance = 1 - fast_similarity
-            total_distance += distance
+            # fast_similarity = population[i].fast_similarity(population[j])
+            # distance = fast_similarity
+            total_distance += population[i].fast_similarity(population[j])
             number_of_pairs += 1
 
     return total_distance / number_of_pairs
@@ -244,9 +244,9 @@ def _calculate_single_distribution(population, best_prog):
     total_distance = 0
 
     for i in range(len(population)):
-        fast_similarity = population[i].similarity(best_prog)
-        distance = 1 - fast_similarity
-        total_distance += distance
+        # fast_similarity = population[i].similarity(best_prog)
+        # distance = fast_similarity
+        total_distance += population[i].similarity(best_prog)
 
     return total_distance / len(population)
 
