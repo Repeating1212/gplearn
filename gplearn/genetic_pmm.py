@@ -255,6 +255,7 @@ def _save_elites(parents, params, is_predator):
     elites_index = []
     elites_copied = []
     n_elites = params['predator_n_elites' if is_predator else 'prey_n_elites']
+    elites_type = params['elites_type']
 
 
     if n_elites > 0 and parents is not None:
@@ -262,7 +263,8 @@ def _save_elites(parents, params, is_predator):
             parent_fitness = np.array([p.fitness_ for p in parents])
             elites_index = np.argsort( 1 * parent_fitness)[:n_elites]
         else:
-            parent_fitness = np.array([p.raw_fitness_ for p in parents])
+            attr = 'raw_fitness_' if elites_type == 'raw fitness' else 'fitness_'
+            parent_fitness = np.array([getattr(p, attr) for p in parents])
             elites_index = np.argsort(-1 * metric.sign * parent_fitness)[:n_elites]
 
         for original_idx in elites_index:
@@ -318,6 +320,7 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
                  random_state=None,
                  prey_n_elites=0,
                  predator_n_elites=0,
+                 elites_type='raw fitness',
 
                  predator_population_size= 200,
                  catch_num = 20,
@@ -354,6 +357,7 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
         self.random_state = random_state
         self.prey_n_elites = prey_n_elites
         self.predator_n_elites = predator_n_elites
+        self.elites_type = elites_type
 
         # Predator-Prey Model Params
         self.catch_penalty = catch_penalty
@@ -589,6 +593,12 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
             raise ValueError(
                 f"Valid integer values for `predator_n_elites` are 0 <= predator_n_elites <= preadtor population_size ({self.predator_population_size}). "
                 f"Got {self.predator_n_elites}."
+            )
+
+        if self.elites_type not in ('raw fitness', 'fitness'):
+            raise ValueError(
+                f"Valid string values for `elites_type` are 'raw fitness' or 'fitness'. "
+                f"Got {self.elites_type}."
             )
 
         params = self.get_params()
@@ -1048,6 +1058,7 @@ class SymbolicRegressor(RegressorMixin, BaseSymbolic):
                  random_state=None,
                  prey_n_elites=0,
                  predator_n_elites=0,
+                 elites_type='raw fitness',
 
         predator_population_size = 200,
                 catch_num = 20,
@@ -1081,6 +1092,7 @@ class SymbolicRegressor(RegressorMixin, BaseSymbolic):
             random_state=random_state,
             prey_n_elites= prey_n_elites,
             predator_n_elites=predator_n_elites,
+            elites_type = elites_type,
 
             predator_population_size = predator_population_size,
             catch_num = catch_num,

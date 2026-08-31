@@ -156,40 +156,40 @@ def _parallel_evolve(n_programs, parents, X, y, sample_weight, seeds, params):
 
     return programs
 
-def reproduction(parent, parent_index, X, y, sample_weight, params, seed):
-    """Deep copy elite parent and assign updated reproduction genome."""
-    program = copy.deepcopy(parent)
-    program.parents = {
-        'method': 'Elite Copy',
-        'parent_idx': parent_index,
-        'parent_nodes': []
-    }
-
-    random_state = check_random_state(seed)
-    program._indices_state = None
-
-    max_samples = params['max_samples']
-    n_samples, n_features = X.shape
-    max_samples = int(max_samples * n_samples)
-
-    # Draw samples, using sample weights, and then fit
-    if sample_weight is None:
-        curr_sample_weight = np.ones((n_samples,))
-    else:
-        curr_sample_weight = sample_weight.copy()
-    oob_sample_weight = curr_sample_weight.copy()
-    indices, not_indices = program.get_all_indices(n_samples,
-                                                   max_samples,
-                                                   random_state)
-    curr_sample_weight[not_indices] = 0
-    oob_sample_weight[indices] = 0
-    program.raw_fitness_ = program.raw_fitness(X, y, curr_sample_weight)
-
-    if max_samples < n_samples:
-        # Calculate OOB fitness
-        program.oob_fitness_ = program.raw_fitness(X, y, oob_sample_weight)
-
-    return program
+# def reproduction(parent, parent_index, X, y, sample_weight, params, seed):
+#     """Deep copy elite parent and assign updated reproduction genome."""
+#     program = copy.deepcopy(parent)
+#     program.parents = {
+#         'method': 'Elite Copy',
+#         'parent_idx': parent_index,
+#         'parent_nodes': []
+#     }
+#
+#     random_state = check_random_state(seed)
+#     program._indices_state = None
+#
+#     max_samples = params['max_samples']
+#     n_samples, n_features = X.shape
+#     max_samples = int(max_samples * n_samples)
+#
+#     # Draw samples, using sample weights, and then fit
+#     if sample_weight is None:
+#         curr_sample_weight = np.ones((n_samples,))
+#     else:
+#         curr_sample_weight = sample_weight.copy()
+#     oob_sample_weight = curr_sample_weight.copy()
+#     indices, not_indices = program.get_all_indices(n_samples,
+#                                                    max_samples,
+#                                                    random_state)
+#     curr_sample_weight[not_indices] = 0
+#     oob_sample_weight[indices] = 0
+#     program.raw_fitness_ = program.raw_fitness(X, y, curr_sample_weight)
+#
+#     if max_samples < n_samples:
+#         # Calculate OOB fitness
+#         program.oob_fitness_ = program.raw_fitness(X, y, oob_sample_weight)
+#
+#     return program
 
 def _calculate_distribution(population):
     total_distance = 0
@@ -204,24 +204,27 @@ def _calculate_distribution(population):
 
     return total_distance / number_of_pairs
 
-def _calculate_single_distribution(population, best_prog):
-    total_distance = 0
-
-    for i in range(len(population)):
-        similarity = population[i].similarity(best_prog)
-        distance = 1 - similarity
-        total_distance += distance
-
-    return total_distance / len(population)
+# def _calculate_single_distribution(population, best_prog):
+#     total_distance = 0
+#
+#     for i in range(len(population)):
+#         similarity = population[i].similarity(best_prog)
+#         distance = 1 - similarity
+#         total_distance += distance
+#
+#     return total_distance / len(population)
 
 def _save_elites(parents, params):
     metric = params['_metric']
     elites_index = []
     elites_copied = []
     n_elites = params['n_elites']
+    elites_type = params['elites_type']
 
     if n_elites > 0 and parents is not None:
-        parent_fitness = np.array([p.raw_fitness_ for p in parents])
+
+        attr = 'raw_fitness_' if elites_type == 'raw fitness' else 'fitness_'
+        parent_fitness = np.array([getattr(p, attr) for p in parents])
         elites_index = np.argsort(-1 * metric.sign * parent_fitness)[:n_elites]
 
         for original_idx in elites_index:
@@ -276,7 +279,9 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
                  n_jobs=1,
                  verbose=0,
                  random_state=None,
-                 n_elites = 0):
+                 n_elites = 0,
+                 elites_type = 'raw fitness'
+    ):
 
         self.population_size = population_size
         self.hall_of_fame = hall_of_fame
@@ -305,6 +310,7 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
         self.verbose = verbose
         self.random_state = random_state
         self.n_elites = n_elites
+        self.elites_type = elites_type
 
         # Data record
         self.best_programs_per_gen = []
@@ -525,6 +531,13 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
                     f"Valid integer values for `n_elites` are 0 <= n_elites <= population_size ({self.population_size}). "
                     f"Got {self.n_elites}."
                 )
+
+            if self.elites_type not in ('raw fitness', 'fitness'):
+                raise ValueError(
+                    f"Valid string values for `elites_type` are 'raw fitness' or 'fitness'. "
+                    f"Got {self.elites_type}."
+                )
+
         params = self.get_params()
         params['_metric'] = self._metric
         if hasattr(self, '_transformer'):
@@ -936,7 +949,9 @@ class SymbolicRegressor(RegressorMixin, BaseSymbolic):
                  n_jobs=1,
                  verbose=0,
                  random_state=None,
-                 n_elites = 0):
+                 n_elites = 0,
+                 elites_type = 'raw fitness'
+    ):
         super(SymbolicRegressor, self).__init__(
             population_size=population_size,
             generations=generations,
@@ -960,7 +975,9 @@ class SymbolicRegressor(RegressorMixin, BaseSymbolic):
             n_jobs=n_jobs,
             verbose=verbose,
             random_state=random_state,
-            n_elites = n_elites)
+            n_elites = n_elites,
+            elites_type = elites_type
+        )
 
     def __str__(self):
         """Overloads `print` output of the object to resemble a LISP tree."""
