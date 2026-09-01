@@ -109,7 +109,7 @@ def _parallel_evolve(n_programs, inti_program, parents, X, y, sample_weight, see
             if method < method_probs[0]:
                 # crossover
                 # donor, donor_index = _tournament()
-                donor, donor_index, _ = _tournament_similarity(parent, random_state, tournament_size)
+                donor, donor_index = _competitive_tournament(parent_index)
                 program, removed, remains = parent.crossover(donor.program,
                                                              random_state)
                 genome = {'method': 'Crossover',
@@ -233,9 +233,7 @@ def _calculate_distribution(population):
 
     for i in range(len(population) -1):
         for j in range(i, len(population)):
-            # fast_similarity = population[i].fast_similarity(population[j])
-            # distance = fast_similarity
-            total_distance += population[i].fast_similarity(population[j])
+            total_distance += 1 - population[i].fast_similarity(population[j])
             number_of_pairs += 1
 
     return total_distance / number_of_pairs
@@ -244,9 +242,7 @@ def _calculate_single_distribution(population, best_prog):
     total_distance = 0
 
     for i in range(len(population)):
-        # fast_similarity = population[i].similarity(best_prog)
-        # distance = fast_similarity
-        total_distance += population[i].similarity(best_prog)
+        total_distance += 1 - population[i].similarity(best_prog)
 
     return total_distance / len(population)
 
@@ -371,9 +367,6 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
 
         # Data record
         self.best_programs_per_gen = []
-        self.population_distribution = []
-        self.predator_best_fitness = []
-        self.predator_population_distribution = []
 
     def _verbose_reporter(self, run_details=None):
         """A report of the progress of the evolution process.
@@ -621,7 +614,15 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
                                  'best_length': [],
                                  'best_fitness': [],
                                  'best_oob_fitness': [],
-                                 'generation_time': []}
+                                 'generation_time': [],
+
+                                 'prey_distribution':[],
+                                 'pred_distribution': [],
+                                 'pred_best_fitness': [],
+                                 'pred_best_length': [],
+                                 'pred_average_fitness': [],
+                                 'pred_average_length': [],
+                                 }
 
         prior_generations = len(self._programs)
         n_more_generations = self.generations - prior_generations
@@ -650,7 +651,7 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
             start_time = time()
 
             prey_parents    = self._programs[gen - 1]      if gen > 0 else None
-            prd_parents     = self._predator_pops[gen - 1] if gen > 0 else None
+            pred_parents     = self._predator_pops[gen - 1] if gen > 0 else None
 
             # Partition jobs for Preys (Population)
             n_jobs, n_programs, starts = _partition_estimators(self.population_size, self.n_jobs)
@@ -665,10 +666,10 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
 
             # 1: Apply predator penalties to existing prey parents (if past Gen 0)
             if (self.predator_population_size > 0):
-                if prd_parents is not None and prey_parents is not None:
+                if pred_parents is not None and prey_parents is not None:
                     penalty_results = Parallel(n_jobs=n_jobs_prd, verbose=int(self.verbose > 1))(
                         delayed(_penalty_prey)(
-                            n_programs_prd[i], starts_prd[i], prey_parents, prd_parents,
+                            n_programs_prd[i], starts_prd[i], prey_parents, pred_parents,
                             X, y, sample_weight, seeds_prd[starts_prd[i]:starts_prd[i + 1]], params,
                             self.catch_num, self.catch_penalty, self.catch_size
                         )
@@ -676,10 +677,10 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
                     )
                     # Properly unpack the list of tuples returned by parallel workers
                     prey_parents   = list(itertools.chain.from_iterable([res[0] for res in penalty_results]))
-                    prd_parents    = list(itertools.chain.from_iterable([res[1] for res in penalty_results]))
+                    pred_parents    = list(itertools.chain.from_iterable([res[1] for res in penalty_results]))
 
             # Save Elites (Predator)
-            prd_elites_index, prd_elites_copied = _save_elites(prd_parents, params, is_predator= True)
+            prd_elites_index, prd_elites_copied = _save_elites(pred_parents, params, is_predator= True)
 
             # 2: Evolve Prey Population
             if (self.population_size > 0):
@@ -696,7 +697,7 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
             #  3: Evolve Predator Population
             predator_batches = Parallel(n_jobs=n_jobs_prd, verbose=int(self.verbose > 1))(
                 delayed(_parallel_evolve)(
-                    n_programs_prd[i], starts_prd[i], prd_parents, X, y, sample_weight,
+                    n_programs_prd[i], starts_prd[i], pred_parents, X, y, sample_weight,
                     seeds_prd[starts_prd[i]:starts_prd[i + 1]], params,
                     is_predator= True
                 )
@@ -715,6 +716,8 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
             # 5: Calculate Fitness
             fitness = [program.raw_fitness_ for program in prey_pop]
             length  = [program.length_ for program in prey_pop]
+            predator_length  = [program.length_ for program in predator_pop]
+            predator_fitness = [program.fitness_ for program in pred_parents] if pred_parents is not None else [0]
 
             parsimony_coefficient = self.parsimony_coefficient
             if parsimony_coefficient == 'auto':
@@ -728,12 +731,13 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
             self._predator_pops.append(predator_pop)
             best_prog = prey_pop[np.argmax([p.raw_fitness_ * self._metric.sign for p in prey_pop])]
             self.best_programs_per_gen.append(best_prog)
-            if prey_parents is not None:
-                self.population_distribution.append(_calculate_single_distribution(prey_parents, best_prog))
-            if prd_parents is not None:
-                self.predator_population_distribution.append(_calculate_distribution(prd_parents))
-                self.predator_best_fitness.append(max([p.fitness_ for p in prd_parents]))
-
+            if pred_parents is not None:
+                best_pred = pred_parents[np.argmax([p.fitness_ for p in pred_parents])]
+                best_pred_fitness = best_pred.fitness_
+                best_pred_length  = len(best_pred.program)
+            else:
+                best_pred_fitness = 0
+                best_pred_length  = 0
 
 
             # Remove old programs that didn't make it into the new population.
@@ -764,6 +768,14 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
             self.run_details_['average_fitness'].append(np.mean(fitness))
             self.run_details_['best_length'].append(best_program.length_)
             self.run_details_['best_fitness'].append(best_program.raw_fitness_)
+            self.run_details_['prey_distribution'].append(_calculate_distribution(prey_pop))
+
+            self.run_details_['pred_distribution'].append(_calculate_distribution(predator_pop))
+            self.run_details_['pred_best_fitness'].append(best_pred_fitness)
+            self.run_details_['pred_best_length'].append(best_pred_length)
+            self.run_details_['pred_average_fitness'].append(np.mean(predator_fitness))
+            self.run_details_['pred_average_length'].append(np.mean(predator_length))
+
             oob_fitness = np.nan
             if self.max_samples < 1.0:
                 oob_fitness = best_program.oob_fitness_
