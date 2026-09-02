@@ -81,13 +81,6 @@ def _parallel_evolve(n_programs, inti_program, parents, X, y, sample_weight, see
             winner_index = contenders[np.argmin(scores)]
         return parents[winner_index], winner_index
 
-    def _tournament_similarity(mate, random_state, catch_size):
-        """Find the most similar individual from a tournament sub-population."""
-        contenders = random_state.randint(0, len(parents), catch_size)
-        similarities = [parents[p].fast_similarity(mate) for p in contenders]
-        parent_index = contenders[np.argmax(similarities)]
-        return parents[parent_index], parent_index, max(similarities)
-
     # Build programs
     programs = []
     random_state = check_random_state(seeds[0])
@@ -226,7 +219,7 @@ def _penalty_prey(n_programs, init_program, preys, predators, X, y, sample_weigh
     # 3. Return brand-new population objects
     return new_preys, new_predators
 
-def _calculate_distribution(population):
+def _calculate_diversity(population):
     total_distance = 0
     number_of_pairs = 0
 
@@ -237,7 +230,7 @@ def _calculate_distribution(population):
 
     return total_distance / number_of_pairs
 
-def _calculate_single_distribution(population, best_prog):
+def _calculate_single_diversity(population, best_prog):
     total_distance = 0
 
     for i in range(len(population)):
@@ -274,6 +267,43 @@ def _save_elites(parents, params, is_predator):
             }
             elites_copied.append(elite_program)
     return elites_index, elites_copied
+
+def compute_mean_locus_shannon_entropy(population):
+    """Computes Mean Locus-wise Shannon Entropy across ALL loci in feature_map.
+
+    Parameters:
+        Population : list of _Programs with similarity_vec
+        Shape (N_programs, K_features) containing precomputed weight vectors.
+
+    Returns:
+    float : Mean locus-wise Shannon entropy across all features (0 to K_features).
+    """
+    program_vectors = [p.similarity_vec for p in population]
+    matrix = np.array(program_vectors, dtype=np.float64)  # (N_programs, K_features)
+    n_programs, k_features = matrix.shape
+
+    if n_programs == 0 or k_features == 0:
+        return 0.0
+
+    locus_sums = matrix.sum(axis=0)
+    locus_entropy = np.zeros(k_features, dtype=np.float64)
+    active_mask = locus_sums > 0
+
+    if np.any(active_mask):
+        # Normalize active columns to form probability diversity
+        p = matrix[:, active_mask] / locus_sums[active_mask]
+
+        # Compute Shannon entropy: -sum(p * log2(p))
+        with np.errstate(divide='ignore', invalid='ignore'):
+            log_p = np.where(p > 0, np.log2(p), 0.0)
+            locus_entropy[active_mask] = -np.sum(p * log_p, axis=0)
+
+    max_entropy = np.log2(n_programs)
+    normalized_entropy = (
+        float(np.mean(locus_entropy) / max_entropy) if max_entropy > 0 else 0.0
+    )
+
+    return normalized_entropy
 
 class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
 
@@ -325,8 +355,8 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
                  predator_competitive_consts = 1,
 
                  # Data Records:
-                 data_record_prey_distribution = True,
-                 data_record_predator_distribution = True,
+                 data_record_diversity_distance=True,
+                 data_record_diversity_entropy=True,
                  ):
 
         self.population_size = population_size
@@ -370,8 +400,8 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
 
         # Data record
         self.best_programs_per_gen = []
-        self.data_record_prey_distribution = data_record_prey_distribution
-        self.data_record_predator_distribution = data_record_predator_distribution
+        self.data_record_diversity_distance = data_record_diversity_distance
+        self.data_record_diversity_entropy = data_record_diversity_entropy
 
 
     def _verbose_reporter(self, run_details=None):
@@ -622,8 +652,11 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
                                  'best_oob_fitness': [],
                                  'generation_time': [],
 
-                                 'prey_distribution':[],
-                                 'pred_distribution': [],
+                                 'prey_diversity_distance':[],
+                                 'pred_diversity_distance': [],
+                                 'prey_diversity_entropy': [],
+                                 'pred_diversity_entropy': [],
+
                                  'pred_best_fitness': [],
                                  'pred_best_length': [],
                                  'pred_average_fitness': [],
@@ -774,10 +807,12 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
             self.run_details_['best_length'].append(best_program.length_)
             self.run_details_['best_fitness'].append(best_program.raw_fitness_)
 
-            if self.data_record_prey_distribution:
-                self.run_details_['prey_distribution'].append(_calculate_distribution(prey_pop))
-            if self.data_record_predator_distribution:
-                self.run_details_['pred_distribution'].append(_calculate_distribution(predator_pop))
+            if self.data_record_diversity_distance:
+                self.run_details_['prey_diversity_distance'].append(_calculate_diversity(prey_pop))
+                self.run_details_['pred_diversity_distance'].append(_calculate_diversity(predator_pop))
+            if self.data_record_diversity_entropy:
+                self.run_details_['prey_diversity_entropy'].append(compute_mean_locus_shannon_entropy(prey_pop))
+                self.run_details_['pred_diversity_entropy'].append(compute_mean_locus_shannon_entropy(predator_pop))
             self.run_details_['pred_best_fitness'].append(best_pred_fitness)
             self.run_details_['pred_best_length'].append(best_pred_length)
             self.run_details_['pred_average_fitness'].append(np.mean(predator_fitness))
@@ -1087,8 +1122,8 @@ class SymbolicRegressor(RegressorMixin, BaseSymbolic):
                 predator_competitive_consts = 1,
 
          # Data Records:
-         data_record_prey_distribution=True,
-             data_record_predator_distribution=True,
+         data_record_diversity_entropy=True,
+             data_record_diversity_distance=True,
         ):
         super(SymbolicRegressor, self).__init__(
             population_size=population_size,
@@ -1125,8 +1160,8 @@ class SymbolicRegressor(RegressorMixin, BaseSymbolic):
             predator_competitive_consts = predator_competitive_consts,
 
             # Data record
-            data_record_prey_distribution = data_record_prey_distribution,
-            data_record_predator_distribution = data_record_predator_distribution,
+            data_record_diversity_distance = data_record_diversity_distance,
+            data_record_diversity_entropy  = data_record_diversity_entropy,
         )
 
     def __str__(self):
