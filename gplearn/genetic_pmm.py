@@ -12,7 +12,6 @@ computer programs.
 import itertools
 import math
 from abc import ABCMeta, abstractmethod
-from asyncio import constants
 from time import time
 from warnings import warn
 
@@ -323,7 +322,12 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
                  catch_penalty = 1.5,
                  catch_size = 5,
                  prey_competitive_consts = 10,
-                 predator_competitive_consts = 1):
+                 predator_competitive_consts = 1,
+
+                 # Data Records:
+                 data_record_prey_distribution = True,
+                 data_record_predator_distribution = True,
+                 ):
 
         self.population_size = population_size
         self.hall_of_fame = hall_of_fame
@@ -364,9 +368,11 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
         self.prey_competitive_consts = prey_competitive_consts
         self.predator_competitive_consts = predator_competitive_consts
 
-
         # Data record
         self.best_programs_per_gen = []
+        self.data_record_prey_distribution = data_record_prey_distribution
+        self.data_record_predator_distribution = data_record_predator_distribution
+
 
     def _verbose_reporter(self, run_details=None):
         """A report of the progress of the evolution process.
@@ -649,9 +655,8 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
         for gen in range(prior_generations, self.generations):
 
             start_time = time()
-
-            prey_parents    = self._programs[gen - 1]      if gen > 0 else None
-            pred_parents     = self._predator_pops[gen - 1] if gen > 0 else None
+            prey_parents = self._programs[gen - 1]      if gen > 0 else None
+            pred_parents = self._predator_pops[gen - 1] if gen > 0 else None
 
             # Partition jobs for Preys (Population)
             n_jobs, n_programs, starts = _partition_estimators(self.population_size, self.n_jobs)
@@ -768,9 +773,11 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
             self.run_details_['average_fitness'].append(np.mean(fitness))
             self.run_details_['best_length'].append(best_program.length_)
             self.run_details_['best_fitness'].append(best_program.raw_fitness_)
-            self.run_details_['prey_distribution'].append(_calculate_distribution(prey_pop))
 
-            self.run_details_['pred_distribution'].append(_calculate_distribution(predator_pop))
+            if self.data_record_prey_distribution:
+                self.run_details_['prey_distribution'].append(_calculate_distribution(prey_pop))
+            if self.data_record_predator_distribution:
+                self.run_details_['pred_distribution'].append(_calculate_distribution(predator_pop))
             self.run_details_['pred_best_fitness'].append(best_pred_fitness)
             self.run_details_['pred_best_length'].append(best_pred_length)
             self.run_details_['pred_average_fitness'].append(np.mean(predator_fitness))
@@ -1078,7 +1085,11 @@ class SymbolicRegressor(RegressorMixin, BaseSymbolic):
                 catch_size = 5,
                 prey_competitive_consts = 10,
                 predator_competitive_consts = 1,
-             ):
+
+         # Data Records:
+         data_record_prey_distribution=True,
+             data_record_predator_distribution=True,
+        ):
         super(SymbolicRegressor, self).__init__(
             population_size=population_size,
             generations=generations,
@@ -1112,6 +1123,10 @@ class SymbolicRegressor(RegressorMixin, BaseSymbolic):
             catch_size = catch_size,
             prey_competitive_consts = prey_competitive_consts,
             predator_competitive_consts = predator_competitive_consts,
+
+            # Data record
+            data_record_prey_distribution = data_record_prey_distribution,
+            data_record_predator_distribution = data_record_predator_distribution,
         )
 
     def __str__(self):
