@@ -268,16 +268,9 @@ def _save_elites(parents, params, is_predator):
             elites_copied.append(elite_program)
     return elites_index, elites_copied
 
-def compute_mean_locus_shannon_entropy(population):
-    """Computes Mean Locus-wise Shannon Entropy across ALL loci in feature_map.
+def compute_locus_shannon_entropy(population):
+    """Computes Mean Locus-wise Shannon Entropy across ALL loci in feature_map."""
 
-    Parameters:
-        Population : list of _Programs with similarity_vec
-        Shape (N_programs, K_features) containing precomputed weight vectors.
-
-    Returns:
-    float : Mean locus-wise Shannon entropy across all features (0 to K_features).
-    """
     program_vectors = [p.similarity_vec for p in population]
     matrix = np.array(program_vectors, dtype=np.float64)  # (N_programs, K_features)
     n_programs, k_features = matrix.shape
@@ -303,7 +296,7 @@ def compute_mean_locus_shannon_entropy(population):
         float(np.mean(locus_entropy) / max_entropy) if max_entropy > 0 else 0.0
     )
 
-    return normalized_entropy
+    return normalized_entropy, locus_entropy
 
 class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
 
@@ -656,6 +649,8 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
                                  'pred_diversity_distance': [],
                                  'prey_diversity_entropy': [],
                                  'pred_diversity_entropy': [],
+                                 'prey_entropy_history': [],
+                                 'pred_entropy_history': [],
 
                                  'pred_best_fitness': [],
                                  'pred_best_length': [],
@@ -811,8 +806,12 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
                 self.run_details_['prey_diversity_distance'].append(_calculate_diversity(prey_pop))
                 self.run_details_['pred_diversity_distance'].append(_calculate_diversity(predator_pop))
             if self.data_record_diversity_entropy:
-                self.run_details_['prey_diversity_entropy'].append(compute_mean_locus_shannon_entropy(prey_pop))
-                self.run_details_['pred_diversity_entropy'].append(compute_mean_locus_shannon_entropy(predator_pop))
+                prey_entropy, prey_entropy_array = compute_locus_shannon_entropy(prey_pop)
+                predator_entropy, predator_entropy_array = compute_locus_shannon_entropy(predator_pop)
+                self.run_details_['prey_diversity_entropy'].append(prey_entropy)
+                self.run_details_['prey_entropy_history'].append(prey_entropy_array)
+                self.run_details_['pred_diversity_entropy'].append(predator_entropy)
+                self.run_details_['pred_entropy_history'].append(predator_entropy_array)
             self.run_details_['pred_best_fitness'].append(best_pred_fitness)
             self.run_details_['pred_best_length'].append(best_pred_length)
             self.run_details_['pred_average_fitness'].append(np.mean(predator_fitness))

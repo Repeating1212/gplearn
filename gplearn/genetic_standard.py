@@ -228,16 +228,9 @@ def _calculate_diversity(population):
 
     return total_distance / number_of_pairs
 
-def compute_mean_locus_shannon_entropy(population):
-    """Computes Mean Locus-wise Shannon Entropy across ALL loci in feature_map.
+def compute_locus_shannon_entropy(population):
+    """Computes Mean Locus-wise Shannon Entropy across ALL loci in feature_map."""
 
-    Parameters:
-        Population : list of _Programs with similarity_vec
-        Shape (N_programs, K_features) containing precomputed weight vectors.
-
-    Returns:
-    float : Mean locus-wise Shannon entropy across all features (0 to K_features).
-    """
     program_vectors = [p.similarity_vec for p in population]
     matrix = np.array(program_vectors, dtype=np.float64)  # (N_programs, K_features)
     n_programs, k_features = matrix.shape
@@ -263,7 +256,7 @@ def compute_mean_locus_shannon_entropy(population):
         float(np.mean(locus_entropy) / max_entropy) if max_entropy > 0 else 0.0
     )
 
-    return normalized_entropy
+    return normalized_entropy, locus_entropy
 
 
 class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
@@ -588,6 +581,7 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
                                  'generation_time': [],
                                  'diversity_distance': [],
                                  'diversity_entropy': [],
+                                 'entropy_history': [],
                                  'fitness_robust_average': []}
 
         prior_generations = len(self._programs)
@@ -694,7 +688,9 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
             if self.data_record_diversity_distance:
                 self.run_details_['diversity_distance'].append(_calculate_diversity(population))
             if self.data_record_diversity_entropy:
-                self.run_details_['diversity_entropy'].append(compute_mean_locus_shannon_entropy(population))
+                entropy_mean, entropy_array = compute_locus_shannon_entropy(population)
+                self.run_details_['diversity_entropy'].append(entropy_mean)
+                self.run_details_['entropy_history'].append(entropy_array)
 
             oob_fitness = np.nan
             if self.max_samples < 1.0:
