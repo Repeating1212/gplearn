@@ -191,29 +191,6 @@ def _parallel_evolve(n_programs, parents, X, y, sample_weight, seeds, params):
 #
 #     return program
 
-def _calculate_distribution(population):
-    total_distance = 0
-    number_of_pairs = 0
-
-    for i in range(len(population) -1):
-        for j in range(i, len(population)):
-            similarity = population[i].fast_similarity(population[j])
-            distance = 1 - similarity
-            total_distance += distance
-            number_of_pairs += 1
-
-    return total_distance / number_of_pairs
-
-# def _calculate_single_distribution(population, best_prog):
-#     total_distance = 0
-#
-#     for i in range(len(population)):
-#         similarity = population[i].similarity(best_prog)
-#         distance = 1 - similarity
-#         total_distance += distance
-#
-#     return total_distance / len(population)
-
 def _save_elites(parents, params):
     metric = params['_metric']
     elites_index = []
@@ -239,6 +216,54 @@ def _save_elites(parents, params):
             }
             elites_copied.append(elite_program)
     return elites_index, elites_copied
+
+def _calculate_diversity(population):
+    total_distance = 0
+    number_of_pairs = 0
+
+    for i in range(len(population) -1):
+        for j in range(i, len(population)):
+            total_distance += 1 - population[i].fast_similarity(population[j])
+            number_of_pairs += 1
+
+    return total_distance / number_of_pairs
+
+def compute_mean_locus_shannon_entropy(population):
+    """Computes Mean Locus-wise Shannon Entropy across ALL loci in feature_map.
+
+    Parameters:
+        Population : list of _Programs with similarity_vec
+        Shape (N_programs, K_features) containing precomputed weight vectors.
+
+    Returns:
+    float : Mean locus-wise Shannon entropy across all features (0 to K_features).
+    """
+    program_vectors = [p.similarity_vec for p in population]
+    matrix = np.array(program_vectors, dtype=np.float64)  # (N_programs, K_features)
+    n_programs, k_features = matrix.shape
+
+    if n_programs == 0 or k_features == 0:
+        return 0.0
+
+    locus_sums = matrix.sum(axis=0)
+    locus_entropy = np.zeros(k_features, dtype=np.float64)
+    active_mask = locus_sums > 0
+
+    if np.any(active_mask):
+        # Normalize active columns to form probability diversity
+        p = matrix[:, active_mask] / locus_sums[active_mask]
+
+        # Compute Shannon entropy: -sum(p * log2(p))
+        with np.errstate(divide='ignore', invalid='ignore'):
+            log_p = np.where(p > 0, np.log2(p), 0.0)
+            locus_entropy[active_mask] = -np.sum(p * log_p, axis=0)
+
+    max_entropy = np.log2(n_programs)
+    normalized_entropy = (
+        float(np.mean(locus_entropy) / max_entropy) if max_entropy > 0 else 0.0
+    )
+
+    return normalized_entropy
 
 
 class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
@@ -280,7 +305,11 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
                  verbose=0,
                  random_state=None,
                  n_elites = 0,
-                 elites_type = 'raw fitness'
+                 elites_type = 'raw fitness',
+
+                # Data Records:
+                data_record_diversity_distance = True,
+                data_record_diversity_entropy = True,
     ):
 
         self.population_size = population_size
@@ -314,9 +343,8 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
 
         # Data record
         self.best_programs_per_gen = []
-        self.population_distribution = []
-        self.fitness_interquartile_range = []
-        self.fitness_robust_average = []
+        self.data_record_diversity_distance = data_record_diversity_distance
+        self.data_record_diversity_entropy = data_record_diversity_entropy
 
     def _verbose_reporter(self, run_details=None):
         """A report of the progress of the evolution process.
@@ -557,7 +585,10 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
                                  'best_length': [],
                                  'best_fitness': [],
                                  'best_oob_fitness': [],
-                                 'generation_time': []}
+                                 'generation_time': [],
+                                 'diversity_distance': [],
+                                 'diversity_entropy': [],
+                                 'fitness_robust_average': []}
 
         prior_generations = len(self._programs)
         n_more_generations = self.generations - prior_generations
@@ -629,10 +660,6 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
             self._programs.append(population)
             best_prog = population[np.argmax([p.raw_fitness_ * self._metric.sign for p in population])]
             self.best_programs_per_gen.append(best_prog)
-            q75, q25 = np.percentile(fitness, [75, 25])
-            self.fitness_robust_average.append(trim_mean(fitness, proportiontocut=0.25))
-            self.fitness_interquartile_range.append(abs(q75 - q25))
-            self.population_distribution.append(_calculate_distribution(population))
 
             # Remove old programs that didn't make it into the new population.
             if not self.low_memory:
@@ -662,6 +689,13 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
             self.run_details_['average_fitness'].append(np.mean(fitness))
             self.run_details_['best_length'].append(best_program.length_)
             self.run_details_['best_fitness'].append(best_program.raw_fitness_)
+            self.run_details_['fitness_robust_average'].append(trim_mean(fitness, proportiontocut=0.25))
+
+            if self.data_record_diversity_distance:
+                self.run_details_['diversity_distance'].append(_calculate_diversity(population))
+            if self.data_record_diversity_entropy:
+                self.run_details_['diversity_entropy'].append(compute_mean_locus_shannon_entropy(population))
+
             oob_fitness = np.nan
             if self.max_samples < 1.0:
                 oob_fitness = best_program.oob_fitness_
@@ -950,7 +984,11 @@ class SymbolicRegressor(RegressorMixin, BaseSymbolic):
                  verbose=0,
                  random_state=None,
                  n_elites = 0,
-                 elites_type = 'raw fitness'
+                 elites_type = 'raw fitness',
+
+                # Data Records:
+                data_record_diversity_entropy = True,
+                data_record_diversity_distance = True,
     ):
         super(SymbolicRegressor, self).__init__(
             population_size=population_size,
@@ -976,7 +1014,10 @@ class SymbolicRegressor(RegressorMixin, BaseSymbolic):
             verbose=verbose,
             random_state=random_state,
             n_elites = n_elites,
-            elites_type = elites_type
+            elites_type = elites_type,
+
+            data_record_diversity_entropy= data_record_diversity_entropy,
+            data_record_diversity_distance= data_record_diversity_distance,
         )
 
     def __str__(self):
