@@ -773,9 +773,10 @@ class _Program(object):
 
     def _get_constant_bin(self, val):
         """Categorizes a float constant into a fixed bin key."""
-        min_c, max_c = self.const_range
+        min_c = min(self.const_range)
+        max_c = max(self.const_range)
         span = max_c - min_c
-        ratio = (val - min_c) / span if span <= 0  else 0.0
+        ratio = (val - min_c) / span if span > 0  else 0.0
 
         if ratio < 0.25:
             return 'CONST_Q0_To_Q1'
