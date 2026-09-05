@@ -282,6 +282,11 @@ def compute_locus_shannon_entropy(population):
     locus_entropy = np.zeros(k_features, dtype=np.float64)
     active_mask = locus_sums > 0
 
+    global_locus_prob = (
+        locus_sums / locus_sums.sum() if  locus_sums.sum() > 0
+        else np.zeros(k_features)
+    )
+
     if np.any(active_mask):
         # Normalize active columns to form probability diversity
         p = matrix[:, active_mask] / locus_sums[active_mask]
@@ -296,7 +301,7 @@ def compute_locus_shannon_entropy(population):
         float(np.mean(locus_entropy) / max_entropy) if max_entropy > 0 else 0.0
     )
 
-    return normalized_entropy, locus_entropy
+    return normalized_entropy, global_locus_prob, locus_entropy
 
 class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
 
@@ -646,11 +651,14 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
                                  'generation_time': [],
 
                                  'prey_diversity_distance':[],
-                                 'pred_diversity_distance': [],
                                  'prey_diversity_entropy': [],
-                                 'pred_diversity_entropy': [],
                                  'prey_entropy_history': [],
+                                 'prey_entropy_probability': [],
+
+                                 'pred_diversity_distance': [],
+                                 'pred_diversity_entropy': [],
                                  'pred_entropy_history': [],
+                                 'pred_entropy_probability': [],
 
                                  'pred_best_fitness': [],
                                  'pred_best_length': [],
@@ -806,12 +814,15 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
                 self.run_details_['prey_diversity_distance'].append(_calculate_diversity(prey_pop))
                 self.run_details_['pred_diversity_distance'].append(_calculate_diversity(predator_pop))
             if self.data_record_diversity_entropy:
-                prey_entropy, prey_entropy_array = compute_locus_shannon_entropy(prey_pop)
-                predator_entropy, predator_entropy_array = compute_locus_shannon_entropy(predator_pop)
+                prey_entropy, prey_entropy_probability, prey_entropy_array = compute_locus_shannon_entropy(prey_pop)
+                predator_entropy, predator_entropy_array, predator_entropy_probability = compute_locus_shannon_entropy(predator_pop)
                 self.run_details_['prey_diversity_entropy'].append(prey_entropy)
                 self.run_details_['prey_entropy_history'].append(prey_entropy_array)
+                self.run_details_['prey_entropy_probability'].append(prey_entropy_probability)
                 self.run_details_['pred_diversity_entropy'].append(predator_entropy)
                 self.run_details_['pred_entropy_history'].append(predator_entropy_array)
+                self.run_details_['pred_entropy_probability'].append(predator_entropy_probability)
+
             self.run_details_['pred_best_fitness'].append(best_pred_fitness)
             self.run_details_['pred_best_length'].append(best_pred_length)
             self.run_details_['pred_average_fitness'].append(np.mean(predator_fitness))

@@ -242,6 +242,11 @@ def compute_locus_shannon_entropy(population):
     locus_entropy = np.zeros(k_features, dtype=np.float64)
     active_mask = locus_sums > 0
 
+    global_locus_prob = (
+        locus_sums / locus_sums.sum() if  locus_sums.sum() > 0
+        else np.zeros(k_features)
+    )
+
     if np.any(active_mask):
         # Normalize active columns to form probability diversity
         p = matrix[:, active_mask] / locus_sums[active_mask]
@@ -256,7 +261,7 @@ def compute_locus_shannon_entropy(population):
         float(np.mean(locus_entropy) / max_entropy) if max_entropy > 0 else 0.0
     )
 
-    return normalized_entropy, locus_entropy
+    return normalized_entropy, global_locus_prob, locus_entropy
 
 
 class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
@@ -582,6 +587,7 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
                                  'diversity_distance': [],
                                  'diversity_entropy': [],
                                  'entropy_history': [],
+                                 'entropy_probability_history': [],
                                  'fitness_robust_average': []}
 
         prior_generations = len(self._programs)
@@ -688,9 +694,10 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
             if self.data_record_diversity_distance:
                 self.run_details_['diversity_distance'].append(_calculate_diversity(population))
             if self.data_record_diversity_entropy:
-                entropy_mean, entropy_array = compute_locus_shannon_entropy(population)
+                entropy_mean, entropy_probability,entropy_array = compute_locus_shannon_entropy(population)
                 self.run_details_['diversity_entropy'].append(entropy_mean)
                 self.run_details_['entropy_history'].append(entropy_array)
+                self.run_details_['entropy_probability_history'].append(entropy_probability)
 
             oob_fitness = np.nan
             if self.max_samples < 1.0:

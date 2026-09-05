@@ -829,7 +829,7 @@ class _Program(object):
         Computes weighted similarity in Range (0, 1)
         """
         intersection = np.minimum(self.similarity_vec, program2.similarity_vec).sum()
-        union = np.maximum(self.similarity_vec, program2.similarity_vec).sum()
+        union        = np.maximum(self.similarity_vec, program2.similarity_vec).sum()
         return 0.0 if union == 0 else intersection / union
 
     def distance(self, prog2, constant = 10):
@@ -843,9 +843,8 @@ class _Program(object):
         """
         if constant <= 0:
             return 1
-        epsilon = 1e-10
-        similarity = max((1 - self.fast_similarity(prog2)), epsilon)
-        return  1 + (similarity ** 2) * constant
+        different = 1 - self.fast_similarity(prog2)
+        return  1 + (different * constant)
 
     def competitive_value(self, prog2, constant = 10):
         return self.fitness_ * self.distance(prog2, constant)
