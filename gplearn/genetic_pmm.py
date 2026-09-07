@@ -10,7 +10,6 @@ computer programs.
 # License: BSD 3 clause
 
 import itertools
-import math
 from abc import ABCMeta, abstractmethod
 from time import time
 from warnings import warn
@@ -27,11 +26,13 @@ from sklearn.utils.multiclass import type_of_target
 from sklearn.utils.validation import validate_data, _check_sample_weight
 
 from ._program import _Program
+from ._analysis import compute_locus_shannon_entropy, compute_shannon_feature_coverage, calculate_diversity
 from .fitness import _fitness_map, _Fitness
 from .functions import _function_map, _Function, sig1 as sigmoid
 from .utils import _partition_estimators
 from .utils import check_random_state
 import copy
+import heapq
 
 __all__ = ['SymbolicRegressor', 'SymbolicClassifier', 'SymbolicTransformer']
 
@@ -42,7 +43,6 @@ def _parallel_evolve(n_programs, inti_program, parents, X, y, sample_weight, see
     """Private function used to build a batch of programs within a job."""
     n_samples, n_features = X.shape
     # Unpack parameters
-    tournament_size = params['tournament_size']
     function_set = params['function_set']
     arities = params['arities']
     init_depth = params['init_depth']
@@ -58,6 +58,7 @@ def _parallel_evolve(n_programs, inti_program, parents, X, y, sample_weight, see
     competitive_constant = params['predator_competitive_consts' if is_predator else 'prey_competitive_consts']
 
     max_samples = int(max_samples * n_samples)
+    tournament_size = params['predator_tournament_size'] if is_predator else params['tournament_size']
 
     def _tournament():
         """Find the fittest individual from a sub-population."""
@@ -174,69 +175,58 @@ def _parallel_evolve(n_programs, inti_program, parents, X, y, sample_weight, see
 
     return programs
 
-def _penalty_prey(n_programs, init_program, preys, predators, X, y, sample_weight, seeds, params,
-                  catch_num, catch_penalty , catch_size):
-    """
-    Builds and returns brand-new, isolated prey and predator populations
-    without modifying the original input reference objects.
+def _penalty_prey(preys, predators, seeds, params):
+    """Builds and returns brand-new, isolated prey and predator populations.
+
+    Runs a SINGLE tournament per predator to extract top 'catch_num' preys by
+    similarity, updating predator fitness and applying decaying penalties.
     """
 
-    metric = params['_metric']
+    metric          = params['_metric']
+    catch_size      = params['catch_size']
+    catch_num       = min(params['catch_num'], catch_size)
+    catch_penalty   = params['catch_penalty']
 
     # Deep-copy populations
     new_preys = [copy.deepcopy(p) for p in preys]
     new_predators = [copy.deepcopy(p) for p in predators]
+    penalty_values = []
 
-    def _tournament_similarity(mate, random_state, catch_size):
-        """Find the most similar individual from a tournament sub-population."""
-        contenders = random_state.randint(0, len(new_preys), catch_size)
-        similarities = [new_preys[p].fast_similarity(mate) for p in contenders]
-        parent_index = contenders[np.argmax(similarities)]
-        return new_preys[parent_index], parent_index, max(similarities)
-
-    #  Execute interaction logic on the new isolated copies
-    for i in range(n_programs):
-
+    # Execute interaction logic on isolated copies
+    for i in range(len(predators)):
         random_state = check_random_state(seeds[i])
-        predator_index  = (init_program + i) % len(new_predators)
-        predator        = new_predators[predator_index]
-        predator.fitness_ = 0
+        predator_index = i % len(new_predators)
+        predator = new_predators[predator_index]
 
-        for j in range(catch_num):
-            prey, prey_index, similarity = _tournament_similarity(predator, random_state, catch_size)
-            predator.fitness_ += similarity
+        # 1. Tournament: Sample 'catch_size' contenders from prey population
+        contenders = random_state.randint(0, len(new_preys), catch_size)
+        contender_similarities = [
+            (idx, predator.fast_similarity(new_preys[idx]))
+            for idx in contenders
+        ]
+        top_n_caught = heapq.nlargest(catch_num, contender_similarities, key=lambda x: x[1])
 
-            # Penalize and Calculate Fitness
-            if metric.greater_is_better:
-                new_preys[prey_index].fitness_ /= 1 + (catch_penalty * similarity)
-            else:
-                new_preys[prey_index].fitness_ *= 1 + (catch_penalty * similarity)
+        # 2. Calculate Predator Fitness
+        predator.fitness_ = sum(
+            sim / (k+1) for k, (_, sim) in enumerate(top_n_caught)
+        )
 
-        # Calculate parsimony_coefficient
-        # penalty = predator.parsimony_coefficient * len(predator.program) * 1 * predator.fitness_
-        # predator.fitness_ -= penalty
+        # 3. Apply decaying penalty
+        penalty = []
+        for k, (prey_idx, similarity) in enumerate(top_n_caught):
 
-    # 3. Return brand-new population objects
-    return new_preys, new_predators
+            prey = new_preys[prey_idx]
+            effective_penalty = 0
+            if prey.fitness_ < prey.parsimony_coefficient_fitness_ * 2.0:
+                effective_penalty = (catch_penalty * similarity) * metric.sign * -1
+            origin_value  = prey.fitness_
+            penalty_value = prey.fitness_ + (prey.parsimony_coefficient_fitness_ * effective_penalty)
+            penalty.append(abs(origin_value - penalty_value))
+            prey.fitness_ = penalty_value
 
-def _calculate_diversity(population):
-    total_distance = 0
-    number_of_pairs = 0
+        penalty_values.append(sum(penalty))
 
-    for i in range(len(population) -1):
-        for j in range(i, len(population)):
-            total_distance += 1 - population[i].fast_similarity(population[j])
-            number_of_pairs += 1
-
-    return total_distance / number_of_pairs
-
-def _calculate_single_diversity(population, best_prog):
-    total_distance = 0
-
-    for i in range(len(population)):
-        total_distance += 1 - population[i].similarity(best_prog)
-
-    return total_distance / len(population)
+    return new_preys, new_predators, penalty_values
 
 def _save_elites(parents, params, is_predator):
     metric = params['_metric']
@@ -267,41 +257,6 @@ def _save_elites(parents, params, is_predator):
             }
             elites_copied.append(elite_program)
     return elites_index, elites_copied
-
-def compute_locus_shannon_entropy(population):
-    """Computes Mean Locus-wise Shannon Entropy across ALL loci in feature_map."""
-
-    program_vectors = [p.similarity_vec for p in population]
-    matrix = np.array(program_vectors, dtype=np.float64)  # (N_programs, K_features)
-    n_programs, k_features = matrix.shape
-
-    if n_programs == 0 or k_features == 0:
-        return 0.0
-
-    locus_sums = matrix.sum(axis=0)
-    locus_entropy = np.zeros(k_features, dtype=np.float64)
-    active_mask = locus_sums > 0
-
-    global_locus_prob = (
-        locus_sums / locus_sums.sum() if  locus_sums.sum() > 0
-        else np.zeros(k_features)
-    )
-
-    if np.any(active_mask):
-        # Normalize active columns to form probability diversity
-        p = matrix[:, active_mask] / locus_sums[active_mask]
-
-        # Compute Shannon entropy: -sum(p * log2(p))
-        with np.errstate(divide='ignore', invalid='ignore'):
-            log_p = np.where(p > 0, np.log2(p), 0.0)
-            locus_entropy[active_mask] = -np.sum(p * log_p, axis=0)
-
-    max_entropy = np.log2(n_programs)
-    normalized_entropy = (
-        float(np.mean(locus_entropy) / max_entropy) if max_entropy > 0 else 0.0
-    )
-
-    return normalized_entropy, global_locus_prob, locus_entropy
 
 class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
 
@@ -345,6 +300,7 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
                  predator_n_elites=0,
                  elites_type='raw fitness',
 
+                 predator_tournament_size = 20,
                  predator_population_size= 200,
                  catch_num = 20,
                  catch_penalty = 1.5,
@@ -392,6 +348,7 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
         self.catch_size = catch_size
         self.catch_num = catch_num
         self.predator_population_size = predator_population_size
+        self.predator_tournament_size = predator_tournament_size
 
         self.prey_competitive_consts = prey_competitive_consts
         self.predator_competitive_consts = predator_competitive_consts
@@ -645,6 +602,8 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
             self.run_details_ = {'generation': [],
                                  'average_length': [],
                                  'average_fitness': [],
+                                 'parent_average_parsimony_fitness': [],
+                                 'parent_average_final_fitness': [],
                                  'best_length': [],
                                  'best_fitness': [],
                                  'best_oob_fitness': [],
@@ -664,6 +623,8 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
                                  'pred_best_length': [],
                                  'pred_average_fitness': [],
                                  'pred_average_length': [],
+
+                                 'penalty_values': [],
                                  }
 
         prior_generations = len(self._programs)
@@ -674,7 +635,7 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
                              'len(_programs)=%d when warm_start==True'
                              % (self.generations, len(self._programs)))
         elif n_more_generations == 0:
-            fitness = [program.raw_fitness_ for program in self._programs[-1]]
+            raw_fitness = [program.raw_fitness_ for program in self._programs[-1]]
             warn('Warm-start fitting without increasing n_estimators does not '
                  'fit new programs.')
 
@@ -706,19 +667,13 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
             prey_elites_index, prey_elites_copied = _save_elites(prey_parents, params, is_predator= False)
 
             # 1: Apply predator penalties to existing prey parents (if past Gen 0)
+            penalty_values = None
             if (self.predator_population_size > 0):
                 if pred_parents is not None and prey_parents is not None:
-                    penalty_results = Parallel(n_jobs=n_jobs_prd, verbose=int(self.verbose > 1))(
-                        delayed(_penalty_prey)(
-                            n_programs_prd[i], starts_prd[i], prey_parents, pred_parents,
-                            X, y, sample_weight, seeds_prd[starts_prd[i]:starts_prd[i + 1]], params,
-                            self.catch_num, self.catch_penalty, self.catch_size
+                    prey_parents, pred_parents, penalty_values = _penalty_prey(
+                            prey_parents, pred_parents, seeds_prd, params
                         )
-                        for i in range(n_jobs_prd)
-                    )
-                    # Properly unpack the list of tuples returned by parallel workers
-                    prey_parents   = list(itertools.chain.from_iterable([res[0] for res in penalty_results]))
-                    pred_parents    = list(itertools.chain.from_iterable([res[1] for res in penalty_results]))
+                    penalty_values = sum(penalty_values)
 
             # Save Elites (Predator)
             prd_elites_index, prd_elites_copied = _save_elites(pred_parents, params, is_predator= True)
@@ -755,14 +710,20 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
                     predator_pop[int(original_idx)] = elite_program
 
             # 5: Calculate Fitness
-            fitness = [program.raw_fitness_ for program in prey_pop]
+            raw_fitness = [program.raw_fitness_ for program in prey_pop]
             length  = [program.length_ for program in prey_pop]
             predator_length  = [program.length_ for program in predator_pop]
             predator_fitness = [program.fitness_ for program in pred_parents] if pred_parents is not None else [0]
+            if prey_parents is not None:
+                parent_final_fitness = [program.fitness_ for program in prey_parents]
+                parent_parsimony_fitness = [program.parsimony_coefficient_fitness_ for program in prey_parents]
+            else:
+                parent_final_fitness = [0]
+                parent_parsimony_fitness = [0]
 
             parsimony_coefficient = self.parsimony_coefficient
             if parsimony_coefficient == 'auto':
-                parsimony_coefficient = np.cov(length, fitness)[1, 0] / np.var(length)
+                parsimony_coefficient = np.cov(length, raw_fitness)[1, 0] / np.var(length)
 
             for program in prey_pop:
                 program.fitness_ = program.fitness(parsimony_coefficient)
@@ -800,26 +761,32 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
 
             # Record run details
             if self._metric.greater_is_better:
-                best_program = prey_pop[np.argmax(fitness)]
+                best_program = prey_pop[np.argmax(raw_fitness)]
             else:
-                best_program = prey_pop[np.argmin(fitness)]
+                best_program = prey_pop[np.argmin(raw_fitness)]
 
             self.run_details_['generation'].append(gen)
             self.run_details_['average_length'].append(np.mean(length))
-            self.run_details_['average_fitness'].append(np.mean(fitness))
+            self.run_details_['average_fitness'].append(np.mean(raw_fitness))
             self.run_details_['best_length'].append(best_program.length_)
             self.run_details_['best_fitness'].append(best_program.raw_fitness_)
+            self.run_details_['parent_average_parsimony_fitness'].append(np.mean(parent_parsimony_fitness))
+            self.run_details_['parent_average_final_fitness'].append(np.mean(parent_final_fitness))
 
             if self.data_record_diversity_distance:
-                self.run_details_['prey_diversity_distance'].append(_calculate_diversity(prey_pop))
-                self.run_details_['pred_diversity_distance'].append(_calculate_diversity(predator_pop))
+                self.run_details_['prey_diversity_distance'].append(calculate_diversity(prey_pop))
+                self.run_details_['pred_diversity_distance'].append(calculate_diversity(predator_pop))
             if self.data_record_diversity_entropy:
-                prey_entropy, prey_entropy_probability, prey_entropy_array = compute_locus_shannon_entropy(prey_pop)
-                predator_entropy, predator_entropy_array, predator_entropy_probability = compute_locus_shannon_entropy(predator_pop)
-                self.run_details_['prey_diversity_entropy'].append(prey_entropy)
+
+                (prey_feature_coverage, prey_entropy_probability) = compute_shannon_feature_coverage(prey_pop)
+                (predator_feature_coverage, predator_entropy_probability) = compute_shannon_feature_coverage(predator_pop)
+                prey_entropy_array = compute_locus_shannon_entropy(prey_pop)
+                predator_entropy_array = compute_locus_shannon_entropy(predator_pop)
+
+                self.run_details_['prey_diversity_entropy'].append(prey_feature_coverage)
                 self.run_details_['prey_entropy_history'].append(prey_entropy_array)
                 self.run_details_['prey_entropy_probability'].append(prey_entropy_probability)
-                self.run_details_['pred_diversity_entropy'].append(predator_entropy)
+                self.run_details_['pred_diversity_entropy'].append(predator_feature_coverage)
                 self.run_details_['pred_entropy_history'].append(predator_entropy_array)
                 self.run_details_['pred_entropy_probability'].append(predator_entropy_probability)
 
@@ -827,6 +794,9 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
             self.run_details_['pred_best_length'].append(best_pred_length)
             self.run_details_['pred_average_fitness'].append(np.mean(predator_fitness))
             self.run_details_['pred_average_length'].append(np.mean(predator_length))
+            if penalty_values is not None:
+                penalty_values = penalty_values / (np.mean(raw_fitness) * len(raw_fitness))
+                self.run_details_['penalty_values'].append(penalty_values)
 
             oob_fitness = np.nan
             if self.max_samples < 1.0:
@@ -840,21 +810,21 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
 
             # Check for early stopping
             if self._metric.greater_is_better:
-                best_fitness = fitness[np.argmax(fitness)]
+                best_fitness = raw_fitness[np.argmax(raw_fitness)]
                 if best_fitness >= self.stopping_criteria:
                     break
             else:
-                best_fitness = fitness[np.argmin(fitness)]
+                best_fitness = raw_fitness[np.argmin(raw_fitness)]
                 if best_fitness <= self.stopping_criteria:
                     break
 
         if isinstance(self, TransformerMixin):
             # Find the best individuals in the final generation
-            fitness = np.array(fitness)
+            raw_fitness = np.array(raw_fitness)
             if self._metric.greater_is_better:
-                hall_of_fame = fitness.argsort(kind="stable")[::-1][:self.hall_of_fame]
+                hall_of_fame = raw_fitness.argsort(kind="stable")[::-1][:self.hall_of_fame]
             else:
-                hall_of_fame = fitness.argsort(kind="stable")[:self.hall_of_fame]
+                hall_of_fame = raw_fitness.argsort(kind="stable")[:self.hall_of_fame]
             evaluation = np.array([gp.execute(X) for gp in
                                    [self._programs[-1][i] for
                                     i in hall_of_fame]])
@@ -883,9 +853,9 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
         else:
             # Find the best individual in the final generation
             if self._metric.greater_is_better:
-                self._program = self._programs[-1][np.argmax(fitness)]
+                self._program = self._programs[-1][np.argmax(raw_fitness)]
             else:
-                self._program = self._programs[-1][np.argmin(fitness)]
+                self._program = self._programs[-1][np.argmin(raw_fitness)]
 
         return self
 
@@ -1130,6 +1100,7 @@ class SymbolicRegressor(RegressorMixin, BaseSymbolic):
                 catch_size = 5,
                 prey_competitive_consts = 10,
                 predator_competitive_consts = 1,
+                predator_tournament_size = 20,
 
          # Data Records:
          data_record_diversity_entropy=True,
@@ -1168,6 +1139,7 @@ class SymbolicRegressor(RegressorMixin, BaseSymbolic):
             catch_size = catch_size,
             prey_competitive_consts = prey_competitive_consts,
             predator_competitive_consts = predator_competitive_consts,
+            predator_tournament_size=predator_tournament_size,
 
             # Data record
             data_record_diversity_distance = data_record_diversity_distance,

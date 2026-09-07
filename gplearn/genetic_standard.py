@@ -28,6 +28,7 @@ from sklearn.utils.validation import validate_data, _check_sample_weight
 from scipy.stats import trim_mean
 
 from ._program import _Program
+from ._analysis import compute_shannon_feature_coverage, compute_locus_shannon_entropy, calculate_diversity
 from .fitness import _fitness_map, _Fitness
 from .functions import _function_map, _Function, sig1 as sigmoid
 from .utils import _partition_estimators
@@ -156,41 +157,6 @@ def _parallel_evolve(n_programs, parents, X, y, sample_weight, seeds, params):
 
     return programs
 
-# def reproduction(parent, parent_index, X, y, sample_weight, params, seed):
-#     """Deep copy elite parent and assign updated reproduction genome."""
-#     program = copy.deepcopy(parent)
-#     program.parents = {
-#         'method': 'Elite Copy',
-#         'parent_idx': parent_index,
-#         'parent_nodes': []
-#     }
-#
-#     random_state = check_random_state(seed)
-#     program._indices_state = None
-#
-#     max_samples = params['max_samples']
-#     n_samples, n_features = X.shape
-#     max_samples = int(max_samples * n_samples)
-#
-#     # Draw samples, using sample weights, and then fit
-#     if sample_weight is None:
-#         curr_sample_weight = np.ones((n_samples,))
-#     else:
-#         curr_sample_weight = sample_weight.copy()
-#     oob_sample_weight = curr_sample_weight.copy()
-#     indices, not_indices = program.get_all_indices(n_samples,
-#                                                    max_samples,
-#                                                    random_state)
-#     curr_sample_weight[not_indices] = 0
-#     oob_sample_weight[indices] = 0
-#     program.raw_fitness_ = program.raw_fitness(X, y, curr_sample_weight)
-#
-#     if max_samples < n_samples:
-#         # Calculate OOB fitness
-#         program.oob_fitness_ = program.raw_fitness(X, y, oob_sample_weight)
-#
-#     return program
-
 def _save_elites(parents, params):
     metric = params['_metric']
     elites_index = []
@@ -216,52 +182,6 @@ def _save_elites(parents, params):
             }
             elites_copied.append(elite_program)
     return elites_index, elites_copied
-
-def _calculate_diversity(population):
-    total_distance = 0
-    number_of_pairs = 0
-
-    for i in range(len(population) -1):
-        for j in range(i, len(population)):
-            total_distance += 1 - population[i].fast_similarity(population[j])
-            number_of_pairs += 1
-
-    return total_distance / number_of_pairs
-
-def compute_locus_shannon_entropy(population):
-    """Computes Mean Locus-wise Shannon Entropy across ALL loci in feature_map."""
-
-    program_vectors = [p.similarity_vec for p in population]
-    matrix = np.array(program_vectors, dtype=np.float64)  # (N_programs, K_features)
-    n_programs, k_features = matrix.shape
-
-    if n_programs == 0 or k_features == 0:
-        return 0.0
-
-    locus_sums = matrix.sum(axis=0)
-    locus_entropy = np.zeros(k_features, dtype=np.float64)
-    active_mask = locus_sums > 0
-
-    global_locus_prob = (
-        locus_sums / locus_sums.sum() if  locus_sums.sum() > 0
-        else np.zeros(k_features)
-    )
-
-    if np.any(active_mask):
-        # Normalize active columns to form probability diversity
-        p = matrix[:, active_mask] / locus_sums[active_mask]
-
-        # Compute Shannon entropy: -sum(p * log2(p))
-        with np.errstate(divide='ignore', invalid='ignore'):
-            log_p = np.where(p > 0, np.log2(p), 0.0)
-            locus_entropy[active_mask] = -np.sum(p * log_p, axis=0)
-
-    max_entropy = np.log2(n_programs)
-    normalized_entropy = (
-        float(np.mean(locus_entropy) / max_entropy) if max_entropy > 0 else 0.0
-    )
-
-    return normalized_entropy, global_locus_prob, locus_entropy
 
 
 class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
@@ -692,10 +612,11 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
             self.run_details_['fitness_robust_average'].append(trim_mean(fitness, proportiontocut=0.25))
 
             if self.data_record_diversity_distance:
-                self.run_details_['diversity_distance'].append(_calculate_diversity(population))
+                self.run_details_['diversity_distance'].append(calculate_diversity(population))
             if self.data_record_diversity_entropy:
-                entropy_mean, entropy_probability,entropy_array = compute_locus_shannon_entropy(population)
-                self.run_details_['diversity_entropy'].append(entropy_mean)
+                entropy_array = compute_locus_shannon_entropy(population)
+                (feature_coverage, entropy_probability) = compute_shannon_feature_coverage(population)
+                self.run_details_['diversity_entropy'].append(feature_coverage)
                 self.run_details_['entropy_history'].append(entropy_array)
                 self.run_details_['entropy_probability_history'].append(entropy_probability)
 
