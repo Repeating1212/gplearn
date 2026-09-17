@@ -186,6 +186,7 @@ def _penalty_prey(preys, predators, seeds, params):
     catch_size      = params['catch_size']
     catch_num       = min(params['catch_num'], catch_size)
     catch_penalty   = params['catch_penalty']
+    parsimony_coefficient = params['parsimony_coefficient']
 
     # Deep-copy populations
     new_preys = [copy.deepcopy(p) for p in preys]
@@ -208,7 +209,7 @@ def _penalty_prey(preys, predators, seeds, params):
 
         # 2. Calculate Predator Fitness
         predator.fitness_ = sum(
-            sim / (k+1) for k, (_, sim) in enumerate(top_n_caught)
+            sim / (1) for k, (_, sim) in enumerate(top_n_caught)
         )
 
         # 3. Apply decaying penalty
@@ -216,15 +217,22 @@ def _penalty_prey(preys, predators, seeds, params):
         for k, (prey_idx, similarity) in enumerate(top_n_caught):
 
             prey = new_preys[prey_idx]
-            effective_penalty = 0
-            if prey.fitness_ < prey.parsimony_coefficient_fitness_ * 2.0:
-                effective_penalty = (catch_penalty * similarity) * metric.sign * -1
+            # effective_penalty = 0
+            # if prey.fitness_ < prey.parsimony_coefficient_fitness_ * 2.0:
+            effective_penalty = (catch_penalty * similarity) * metric.sign
             origin_value  = prey.fitness_
-            penalty_value = prey.fitness_ + (prey.parsimony_coefficient_fitness_ * effective_penalty)
-            penalty.append(abs(origin_value - penalty_value))
+            penalty_value = prey.fitness_ - prey.parsimony_coefficient_fitness_ * effective_penalty
+            if prey.parsimony_coefficient_fitness_ != 0:
+                penalty.append(abs(origin_value - penalty_value) / prey.parsimony_coefficient_fitness_)
+            else:
+                penalty.append(0)
             prey.fitness_ = penalty_value
 
         penalty_values.append(sum(penalty))
+
+    for program in new_predators:
+        program.raw_fitness_ = program.fitness_
+        program.fitness_ = program.fitness(parsimony_coefficient, 1)
 
     return new_preys, new_predators, penalty_values
 
@@ -503,7 +511,7 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
             self._metric = self.metric
         elif isinstance(self, RegressorMixin):
             if self.metric not in ('mean absolute error', 'mse', 'rmse',
-                                   'pearson', 'spearman', 'r2 score'):
+                                   'pearson', 'spearman', 'r2 score', 'temp'):
                 raise ValueError('Unsupported metric: %s' % self.metric)
             self._metric = _fitness_map[self.metric]
         elif isinstance(self, ClassifierMixin):
@@ -531,10 +539,14 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
                              '"grow", "full" and "half and half". Given %s.'
                              % self.init_method)
 
-        if not((isinstance(self.const_range, tuple) and
-                len(self.const_range) == 2) or self.const_range is None):
-            raise ValueError('const_range should be a tuple with length two, '
-                             'or None.')
+        if not (
+                (isinstance(self.const_range, tuple) and len(self.const_range) == 2)
+                or isinstance(self.const_range, (list, np.ndarray))
+                or self.const_range is None
+        ):
+            raise ValueError(
+                'const_range should be a tuple with length two, a list/array of numbers, or None.'
+            )
 
         if (not isinstance(self.init_depth, tuple) or
                 len(self.init_depth) != 2):
@@ -795,7 +807,7 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
             self.run_details_['pred_average_fitness'].append(np.mean(predator_fitness))
             self.run_details_['pred_average_length'].append(np.mean(predator_length))
             if penalty_values is not None:
-                penalty_values = penalty_values / (np.mean(raw_fitness) * len(raw_fitness))
+                penalty_values = penalty_values / (len(raw_fitness))
                 self.run_details_['penalty_values'].append(penalty_values)
 
             oob_fitness = np.nan

@@ -159,6 +159,7 @@ class _Program(object):
         # Calculate Similarity Vector
         self.similarity_vec = self.build_program_weight_vector()
         self.raw_fitness_ = None
+        self.parsimony_coefficient_fitness_ = None
         self.fitness_ = None
         self.parents = None
         self._n_samples = None
@@ -209,11 +210,16 @@ class _Program(object):
                 else:
                     terminal = random_state.randint(self.n_features)
                 if terminal == self.n_features:
-                    terminal = random_state.uniform(*self.const_range)
                     if self.const_range is None:
                         # We should never get here
                         raise ValueError('A constant was produced with '
                                          'const_range=None.')
+                    # PICK FROM LIST OR UNIFORM RANGE
+                    if isinstance(self.const_range, (list, tuple, np.ndarray)):
+                        terminal = float(random_state.choice(self.const_range))
+                    else:
+                        terminal = random_state.uniform(*self.const_range)
+
                 program.append(terminal)
                 terminal_stack[-1] -= 1
                 while terminal_stack[-1] == 0:
@@ -469,7 +475,7 @@ class _Program(object):
 
         return raw_fitness
 
-    def fitness(self, parsimony_coefficient=None):
+    def fitness(self, parsimony_coefficient=None, metric_sign=None):
         """Evaluate the penalized fitness of the program according to X, y.
 
         Parameters
@@ -486,8 +492,11 @@ class _Program(object):
         """
         if parsimony_coefficient is None:
             parsimony_coefficient = self.parsimony_coefficient
-        penalty = parsimony_coefficient * len(self.program) * self.metric.sign * self.raw_fitness_
-        return self.raw_fitness_ - penalty
+        if metric_sign is None:
+            metric_sign = self.metric.sign
+        penalty = parsimony_coefficient * len(self.program) * metric_sign * self.raw_fitness_
+        self.parsimony_coefficient_fitness_ = self.raw_fitness_ - penalty
+        return self.parsimony_coefficient_fitness_
 
     def get_subtree(self, random_state, program=None):
         """Get a random subtree from the program.
@@ -659,11 +668,16 @@ class _Program(object):
                 else:
                     terminal = random_state.randint(self.n_features)
                 if terminal == self.n_features:
-                    terminal = random_state.uniform(*self.const_range)
                     if self.const_range is None:
                         # We should never get here
                         raise ValueError('A constant was produced with '
                                          'const_range=None.')
+                    # PICK FROM LIST OR UNIFORM RANGE
+                    if isinstance(self.const_range, (list, tuple, np.ndarray)):
+                        terminal = float(random_state.choice(self.const_range))
+                    else:
+                        terminal = random_state.uniform(*self.const_range)
+
                 program[node] = terminal
 
         return program, list(mutate)
@@ -773,10 +787,13 @@ class _Program(object):
 
     def _get_constant_bin(self, val):
         """Categorizes a float constant into a fixed bin key."""
+        if self.const_range is None or len(self.const_range) == 0:
+            return 'CONST_Q0_To_Q1'
+
         min_c = min(self.const_range)
         max_c = max(self.const_range)
         span = max_c - min_c
-        ratio = (val - min_c) / span if span > 0  else 0.0
+        ratio = (val - min_c) / span if span > 0 else 0.0
 
         if ratio < 0.25:
             return 'CONST_Q0_To_Q1'
@@ -847,4 +864,8 @@ class _Program(object):
         return  1 + (different * constant)
 
     def competitive_value(self, prog2, constant = 10):
-        return self.fitness_ * self.distance(prog2, constant)
+        if self.metric.greater_is_better:
+            return self.fitness_ / self.distance(prog2, constant)
+        else:
+            return self.fitness_ * self.distance(prog2, constant)
+

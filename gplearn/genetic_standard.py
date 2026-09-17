@@ -436,10 +436,14 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
                              '"grow", "full" and "half and half". Given %s.'
                              % self.init_method)
 
-        if not((isinstance(self.const_range, tuple) and
-                len(self.const_range) == 2) or self.const_range is None):
-            raise ValueError('const_range should be a tuple with length two, '
-                             'or None.')
+        if not (
+                (isinstance(self.const_range, tuple) and len(self.const_range) == 2)
+                or isinstance(self.const_range, (list, np.ndarray))
+                or self.const_range is None
+        ):
+            raise ValueError(
+                'const_range should be a tuple with length two, a list/array of numbers, or None.'
+            )
 
         if (not isinstance(self.init_depth, tuple) or
                 len(self.init_depth) != 2):
