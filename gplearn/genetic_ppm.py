@@ -60,22 +60,35 @@ def _parallel_evolve(n_programs, inti_program, parents, X, y, sample_weight, see
     max_samples = int(max_samples * n_samples)
     tournament_size = params['predator_tournament_size'] if is_predator else params['tournament_size']
 
-    def _tournament():
-        """Find the fittest individual from a sub-population."""
-        contenders = random_state.randint(0, len(parents), tournament_size)
-        fitness = [parents[p].fitness_ for p in contenders]
-        if metric.greater_is_better or is_predator:
-            parent_index = contenders[np.argmax(fitness)]
-        else:
-            parent_index = contenders[np.argmin(fitness)]
-        return parents[parent_index], parent_index
-
     def _competitive_tournament(origin_idx):
         """Find the fittest individual from a sub-population."""
         origin = parents[origin_idx]
         candidate_indices = random_state.randint(0, len(parents), tournament_size - 1)
         contenders = np.append(candidate_indices, origin_idx)
-        scores = [(parents[p].competitive_value(origin, constant= competitive_constant)) for p in contenders]
+
+        # Inlined Competitive Value Calculation
+        scores = []
+        for p in contenders:
+            contender = parents[p]
+            contender_fitness = contender.fitness_ - contender.penalty_value_
+
+            # Calculate Distance / Penalty Factor directly
+            if competitive_constant <= 0:
+                distance_penalty = 1.0
+            else:
+                similarity = contender.fast_similarity(origin)
+                difference = 1.0 - similarity
+                distance_penalty = 1.0 + (difference * competitive_constant)
+
+            # Apply Penalty Factor to Fitness
+            if metric.greater_is_better:
+                score = contender_fitness / distance_penalty
+            else:
+                score = contender_fitness * distance_penalty
+
+            scores.append(score)
+
+        # Select Best Candidates
         if metric.greater_is_better or is_predator:
             winner_index = contenders[np.argmax(scores)]
         else:
@@ -95,13 +108,11 @@ def _parallel_evolve(n_programs, inti_program, parents, X, y, sample_weight, see
             genome = None
         else:
             method = random_state.uniform()
-            # parent, parent_index = _tournament()
             origin_index = (i + inti_program) % len(parents)
             parent, parent_index = _competitive_tournament(origin_index)
 
             if method < method_probs[0]:
                 # crossover
-                # donor, donor_index = _tournament()
                 donor, donor_index = _competitive_tournament(parent_index)
                 program, removed, remains = parent.crossover(donor.program,
                                                              random_state)
@@ -167,6 +178,7 @@ def _parallel_evolve(n_programs, inti_program, parents, X, y, sample_weight, see
 
         if not is_predator:
             program.raw_fitness_ = program.raw_fitness(X, y, curr_sample_weight)
+            program.fitness_ = program.fitness(parsimony_coefficient)
             if max_samples < n_samples:
                 # Calculate OOB fitness
                 program.oob_fitness_ = program.raw_fitness(X, y, oob_sample_weight)
@@ -191,13 +203,12 @@ def _penalty_prey(preys, predators, seeds, params):
     # Deep-copy populations
     new_preys = [copy.deepcopy(p) for p in preys]
     new_predators = [copy.deepcopy(p) for p in predators]
-    penalty_values = []
+    total_penalty = [0] * len(predators)
 
     # Execute interaction logic on isolated copies
-    for i in range(len(predators)):
-        random_state = check_random_state(seeds[i])
-        predator_index = i % len(new_predators)
-        predator = new_predators[predator_index]
+    for predator_idx in range(len(predators)):
+        random_state = check_random_state(seeds[predator_idx])
+        predator = new_predators[predator_idx]
 
         # 1. Tournament: Sample 'catch_size' contenders from prey population
         contenders = random_state.randint(0, len(new_preys), catch_size)
@@ -209,32 +220,24 @@ def _penalty_prey(preys, predators, seeds, params):
 
         # 2. Calculate Predator Fitness
         predator.fitness_ = sum(
-            sim / (1) for k, (_, sim) in enumerate(top_n_caught)
+            sim for (_, sim) in top_n_caught
         )
 
         # 3. Apply decaying penalty
-        penalty = []
-        for k, (prey_idx, similarity) in enumerate(top_n_caught):
-
+        for (prey_idx, similarity) in top_n_caught:
             prey = new_preys[prey_idx]
-            # effective_penalty = 0
-            # if prey.fitness_ < prey.parsimony_coefficient_fitness_ * 2.0:
-            effective_penalty = (catch_penalty * similarity) * metric.sign
-            origin_value  = prey.fitness_
-            penalty_value = prey.fitness_ - prey.parsimony_coefficient_fitness_ * effective_penalty
-            if prey.parsimony_coefficient_fitness_ != 0:
-                penalty.append(abs(origin_value - penalty_value) / prey.parsimony_coefficient_fitness_)
-            else:
-                penalty.append(0)
-            prey.fitness_ = penalty_value
+            if (prey.fitness_ is None) : continue # Skip Un evaluated prey
+            penalty_value = prey.fitness_ * (catch_penalty * similarity) * metric.sign
+            prey.penalty_value_ += penalty_value
+            if penalty_value != 0:
+                total_penalty[predator_idx] += penalty_value / prey.fitness_
 
-        penalty_values.append(sum(penalty))
 
     for program in new_predators:
         program.raw_fitness_ = program.fitness_
         program.fitness_ = program.fitness(parsimony_coefficient, 1)
 
-    return new_preys, new_predators, penalty_values
+    return new_preys, new_predators, total_penalty
 
 def _save_elites(parents, params, is_predator):
     metric = params['_metric']
@@ -727,8 +730,8 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
             predator_length  = [program.length_ for program in predator_pop]
             predator_fitness = [program.fitness_ for program in pred_parents] if pred_parents is not None else [0]
             if prey_parents is not None:
-                parent_final_fitness = [program.fitness_ for program in prey_parents]
-                parent_parsimony_fitness = [program.parsimony_coefficient_fitness_ for program in prey_parents]
+                parent_final_fitness = [program.fitness_ - program.penalty_value_ for program in prey_parents]
+                parent_parsimony_fitness = [program.fitness_ for program in prey_parents]
             else:
                 parent_final_fitness = [0]
                 parent_parsimony_fitness = [0]
@@ -736,9 +739,6 @@ class BaseSymbolic(BaseEstimator, metaclass=ABCMeta):
             parsimony_coefficient = self.parsimony_coefficient
             if parsimony_coefficient == 'auto':
                 parsimony_coefficient = np.cov(length, raw_fitness)[1, 0] / np.var(length)
-
-            for program in prey_pop:
-                program.fitness_ = program.fitness(parsimony_coefficient)
 
             # 5: Store generation outputs
             self._programs.append(prey_pop)

@@ -12,7 +12,6 @@ computer program. It is used for creating and evolving programs used in the
 from copy import copy
 
 import numpy as np
-from sklearn import metrics
 from sklearn.utils.random import sample_without_replacement
 
 from .functions import _Function
@@ -99,7 +98,7 @@ class _Program(object):
     raw_fitness_ : float
         The raw fitness of the individual program.
 
-    fitness_ : float
+    penalty_value_ : float
         The penalized fitness of the individual program.
 
     oob_fitness_ : float
@@ -159,8 +158,8 @@ class _Program(object):
         # Calculate Similarity Vector
         self.similarity_vec = self.build_program_weight_vector()
         self.raw_fitness_ = None
-        self.parsimony_coefficient_fitness_ = None
         self.fitness_ = None
+        self.penalty_value_ = 0
         self.parents = None
         self._n_samples = None
         self._max_samples = None
@@ -495,8 +494,8 @@ class _Program(object):
         if metric_sign is None:
             metric_sign = self.metric.sign
         penalty = parsimony_coefficient * len(self.program) * metric_sign * self.raw_fitness_
-        self.parsimony_coefficient_fitness_ = self.raw_fitness_ - penalty
-        return self.parsimony_coefficient_fitness_
+        self.fitness_ = self.raw_fitness_ - penalty
+        return self.fitness_
 
     def get_subtree(self, random_state, program=None):
         """Get a random subtree from the program.
@@ -848,24 +847,3 @@ class _Program(object):
         intersection = np.minimum(self.similarity_vec, program2.similarity_vec).sum()
         union        = np.maximum(self.similarity_vec, program2.similarity_vec).sum()
         return 0.0 if union == 0 else intersection / union
-
-    def distance(self, prog2, constant = 10):
-
-        """Calculate the Penalty for similarity different between two program.
-        Parameters
-        ----------
-        prog2 : Program intance
-        constant : The maximum penalty rate + 1
-
-        """
-        if constant <= 0:
-            return 1
-        different = 1 - self.fast_similarity(prog2)
-        return  1 + (different * constant)
-
-    def competitive_value(self, prog2, constant = 10):
-        if self.metric.greater_is_better:
-            return self.fitness_ / self.distance(prog2, constant)
-        else:
-            return self.fitness_ * self.distance(prog2, constant)
-
